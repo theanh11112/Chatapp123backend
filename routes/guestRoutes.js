@@ -1,4 +1,3 @@
-// routes/guestRoutes.js
 const express = require("express");
 const guestController = require("../controllers/guestController");
 const { requireRole } = require("../utils/auth");
@@ -6,15 +5,8 @@ const { requireRole } = require("../utils/auth");
 module.exports = (keycloak) => {
   const router = express.Router();
 
-  // Đảm bảo guestController.guestInfo KHÔNG undefined
-  console.log("✅ guestController =", guestController);
-
-  router.get(
-    "/info",
-    keycloak.protect(),
-    requireRole("guest"),
-    guestController.guestInfo
-  );
+  router.get("/public-info", keycloak.protect(), requireRole("guest"), guestController.getPublicRooms);
+  router.get("/intro", (req, res) => res.json({ message: "Xin chào khách! Bạn chỉ có thể xem thông tin công khai." }));
 
   return router;
 };

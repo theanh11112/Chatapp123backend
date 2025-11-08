@@ -9,44 +9,98 @@ const mongoSanitize = require("express-mongo-sanitize");
 const xss = require("xss-clean");
 const rateLimit = require("express-rate-limit");
 const cookieParser = require("cookie-parser");
+require("dotenv").config();
 
+// Keycloak config
 const { initKeycloak } = require("./keycloak-config");
-const createRoutes = require("./routes/index");
 
+// Import các route đã chia role
+const adminRoutes = require("./routes/adminRoutes");
+const moderatorRoutes = require("./routes/moderatorRoutes");
+const userRoutes = require("./routes/userRoutes");
+const guestRoutes = require("./routes/guestRoutes");
+const botRoutes = require("./routes/botRoutes");
+
+// Khởi tạo Express app
 const app = express();
 
-// Session store cho Keycloak
+// ==================
+// 🔐 Session cho Keycloak
+// ==================
 const memoryStore = new session.MemoryStore();
 app.use(
   session({
-    secret: "keyboard cat",
+    secret: process.env.SESSION_SECRET || "keyboard cat",
     resave: false,
     saveUninitialized: true,
     store: memoryStore,
   })
 );
 
-// Khởi tạo Keycloak
+// ==================
+// 🔑 Khởi tạo Keycloak
+// ==================
 const keycloak = initKeycloak(memoryStore);
 app.use(keycloak.middleware());
 
-// Middleware bảo mật & parse
-app.use(cors({ origin: "*", methods: ["GET","POST","PUT","DELETE","PATCH"], credentials: true }));
+// ==================
+// 🛡️ Middleware bảo mật & parse
+// ==================
+app.use(
+  cors({
+    origin: "*", // Bạn có thể thay bằng origin cụ thể frontend
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+    credentials: true,
+  })
+);
+
 app.use(helmet());
 app.use(express.json({ limit: "10kb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(cookieParser());
-app.use(mongoSanitize());
-app.use(xss());
+app.use(mongoSanitize()); // Chặn NoSQL Injection
+app.use(xss()); // Ngăn XSS Attack
 
+// ==================
+// 📊 Logging & Rate Limit
+// ==================
 if (process.env.NODE_ENV === "development") app.use(morgan("dev"));
 
-// Rate limit
-const limiter = rateLimit({ max: 3000, windowMs: 60*60*1000, message: "Too many requests" });
+const limiter = rateLimit({
+  max: 3000,
+  windowMs: 60 * 60 * 1000, // 1 giờ
+  message: "Too many requests from this IP, please try again later.",
+});
 app.use(limiter);
 
-// Gắn routes
-app.use("/api", createRoutes(keycloak));
+// ==================
+// 🧭 Gắn routes cho từng role
+// ==================
+app.use("/api/admin", adminRoutes(keycloak));
+app.use("/api/moderator", moderatorRoutes(keycloak));
+app.use("/api/user", userRoutes(keycloak));
+app.use("/api/guest", guestRoutes(keycloak));
+app.use("/api/bot", botRoutes(keycloak));
 
+// ==================
+// 🧱 Kiểm tra API mặc định
+// ==================
+app.get("/", (req, res) => {
+  res.json({ message: "Internal Chat System API đang hoạt động 🚀" });
+});
+
+// ==================
+// ❌ Bắt lỗi route không tồn tại
+// ==================
+app.all("*", (req, res) => {
+  res.status(404).json({
+    status: "fail",
+    message: `Không tìm thấy đường dẫn: ${req.originalUrl}`,
+  });
+});
+
+// ==================
+// ✅ Export app để server.js sử dụng
+// ==================
 module.exports = app;
