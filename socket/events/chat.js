@@ -1,93 +1,146 @@
-// socket/events/chat.js
 const User = require("../../models/user");
-const FriendRequest = require("../../models/friendRequest");
 const OneToOneMessage = require("../../models/OneToOneMessage");
+const FriendRequest = require("../../models/friendRequest");
+const AuditLog = require("../../models/auditLog");
 
 module.exports = (socket, io) => {
-  // ---------------- Friend Request ----------------
-  socket.on("friend_request", async (data) => {
+  const currentUserId = socket.user?.keycloakId;
+  if (!currentUserId) return console.warn("Socket connected without user info!");
+
+  const ALLOWED_MSG_TYPES = ["text", "image", "file", "video", "system"];
+  console.log("⚙️ Chat events loaded for user:", socket.user.username, currentUserId);
+
+  // ---------------- Get Direct Conversations ----------------
+  socket.on("get_direct_conversations", async ({ keycloakId }, callback) => {
     try {
-      const { from, to } = data;
-      await FriendRequest.create({ sender: from, recipient: to });
+      const conversations = await OneToOneMessage.find({
+        participants: { $in: [keycloakId] },
+      }).populate("participants", "username email keycloakId");
 
-      const toUser = await User.findById(to);
-      const fromUser = await User.findById(from);
+      callback(conversations);
+    } catch (err) {
+      console.error("Error get_direct_conversations:", err);
+      callback([]);
+    }
+  });
 
-      io.to(toUser.socket_id).emit("new_friend_request", { message: "New friend request received" });
-      io.to(fromUser.socket_id).emit("request_sent", { message: "Request sent successfully!" });
+  // ---------------- Get Messages of a Conversation ----------------
+  socket.on("get_direct_messages", async ({ conversation_id }, callback) => {
+    try {
+      if (!conversation_id) return callback?.([]);
+
+      const conversation = await OneToOneMessage.findById(conversation_id);
+      if (!conversation) return callback?.([]);
+      callback(conversation.messages);
+    } catch (err) {
+      console.error("Error get_direct_messages:", err);
+      callback([]);
+    }
+  });
+
+  // ---------------- Send Message ----------------
+  socket.on("text_message", async ({ conversation_id, to, message, type }, callback) => {
+    try {
+      if (!to || !message) return callback?.({ success: false, error: "Missing required fields" });
+
+      const toId = to.toString();
+      const msgType = type && ALLOWED_MSG_TYPES.includes(type.trim().toLowerCase())
+        ? type.trim().toLowerCase()
+        : "text";
+
+      const newMessage = {
+        from: currentUserId,
+        to: toId,
+        type: msgType,
+        content: message,
+        createdAt: new Date(),
+        seen: false,
+      };
+
+      // Tìm hoặc tạo conversation
+      let chat = conversation_id
+        ? await OneToOneMessage.findById(conversation_id)
+        : await OneToOneMessage.findOne({ participants: { $all: [currentUserId, toId] } });
+
+      if (!chat) {
+        chat = await OneToOneMessage.create({ participants: [currentUserId, toId], messages: [] });
+      }
+
+      chat.messages.push(newMessage);
+      await chat.save();
+
+      const toUser = await User.findOne({ keycloakId: toId });
+
+      if (toUser?.socketId) {
+        io.to(toUser.socketId).emit("new_message", { conversation_id: chat._id, message: newMessage });
+      }
+
+      socket.emit("new_message", { conversation_id: chat._id, message: newMessage });
+
+      await AuditLog.create({
+        user: currentUserId,
+        action: "send_message",
+        targetId: toId,
+        metadata: { message },
+      });
+
+      callback?.({ success: true, message: "Sent" });
+    } catch (err) {
+      console.error("Error text_message:", err);
+      callback?.({ success: false, error: err.message });
+    }
+  });
+
+  // ---------------- Typing Indicator ----------------
+  socket.on("typing_start", ({ roomId }) => roomId && socket.to(roomId).emit("typing_start", { userId: currentUserId }));
+  socket.on("typing_stop", ({ roomId }) => roomId && socket.to(roomId).emit("typing_stop", { userId: currentUserId }));
+
+  // ---------------- Friend Request ----------------
+  socket.on("friend_request", async ({ to }) => {
+    try {
+      if (!to) return;
+      const recipientId = to.toString();
+      await FriendRequest.create({ sender: currentUserId, recipient: recipientId });
+
+      const toUser = await User.findOne({ keycloakId: recipientId });
+      const fromUser = await User.findOne({ keycloakId: currentUserId });
+
+      if (toUser?.socketId) io.to(toUser.socketId).emit("new_friend_request", { from: fromUser });
+      if (fromUser?.socketId) io.to(fromUser.socketId).emit("request_sent", { to: toUser });
+
+      await AuditLog.create({ user: currentUserId, action: "friend_request_sent", targetId: recipientId });
     } catch (err) {
       console.error("Error friend_request:", err);
     }
   });
 
-  socket.on("accept_request", async (data) => {
+  // ---------------- Accept Friend Request ----------------
+  socket.on("accept_request", async ({ request_id }) => {
     try {
-      const request_doc = await FriendRequest.findById(data.request_id);
-      const sender = await User.findById(request_doc.sender);
-      const receiver = await User.findById(request_doc.recipient);
+      if (!request_id) return;
+      const req = await FriendRequest.findById(request_id);
+      if (!req) return;
 
-      sender.friends.push(receiver._id);
-      receiver.friends.push(sender._id);
+      const sender = await User.findOne({ keycloakId: req.sender });
+      const receiver = await User.findOne({ keycloakId: req.recipient });
+      if (!sender || !receiver) return;
 
+      sender.friends.push(receiver.keycloakId);
+      receiver.friends.push(sender.keycloakId);
       await sender.save();
       await receiver.save();
+      await FriendRequest.findByIdAndDelete(request_id);
 
-      await FriendRequest.findByIdAndDelete(data.request_id);
+      if (sender?.socketId) io.to(sender.socketId).emit("request_accepted", { user: receiver });
+      if (receiver?.socketId) io.to(receiver.socketId).emit("request_accepted", { user: sender });
 
-      io.to(sender.socket_id).emit("request_accepted", { message: "Friend Request Accepted" });
-      io.to(receiver.socket_id).emit("request_accepted", { message: "Friend Request Accepted" });
+      await AuditLog.create({
+        user: receiver.keycloakId,
+        action: "friend_request_accepted",
+        targetId: sender.keycloakId,
+      });
     } catch (err) {
       console.error("Error accept_request:", err);
     }
   });
-
-  // ---------------- Direct Conversations ----------------
-  socket.on("get_direct_conversations", async ({ user_id }, callback) => {
-    try {
-      const conversations = await OneToOneMessage.find({ participants: { $all: [user_id] } })
-        .populate("participants", "firstName lastName avatar _id email status");
-      callback(conversations);
-    } catch (err) {
-      console.error(err);
-      callback([]);
-    }
-  });
-
-  socket.on("start_conversation", async ({ from, to }) => {
-    try {
-      let conversation = await OneToOneMessage.findOne({ participants: { $size: 2, $all: [from, to] } })
-        .populate("participants", "firstName lastName _id email status");
-
-      if (!conversation) {
-        conversation = await OneToOneMessage.create({ participants: [from, to] });
-        conversation = await OneToOneMessage.findById(conversation._id)
-          .populate("participants", "firstName lastName _id email status");
-      }
-
-      socket.emit("start_chat", conversation);
-    } catch (err) {
-      console.error(err);
-    }
-  });
-
-  // ---------------- Text Message ----------------
-  socket.on("text_message", async (data) => {
-    try {
-      const { conversation_id, from, to, message, type } = data;
-      const newMessage = { from, to, type, text: message, created_at: Date.now() };
-
-      const chat = await OneToOneMessage.findById(conversation_id);
-      chat.messages.push(newMessage);
-      await chat.save();
-
-      const toUser = await User.findById(to);
-      const fromUser = await User.findById(from);
-
-      io.to(toUser.socket_id).emit("new_message", { conversation_id, message: newMessage });
-      io.to(fromUser.socket_id).emit("new_message", { conversation_id, message: newMessage });
-    } catch (err) {
-      console.error("Error text_message:", err);
-    }
-  });
-
 };

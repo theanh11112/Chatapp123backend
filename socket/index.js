@@ -1,48 +1,93 @@
-// socket/index.js
+// initSocket.js
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
+
 const chatEvents = require("./events/chat");
 const callEvents = require("./events/call");
 const User = require("../models/user");
+const AuditLog = require("../models/auditLog");
 
 const initSocket = (server) => {
   const io = new Server(server, {
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"],
-    },
+    cors: { origin: "*", methods: ["GET", "POST"] },
   });
 
-  // Middleware xác thực token
-  io.use(async (socket, next) => {
-    try {
-      const token = socket.handshake.auth?.token;
-      if (!token) return next(new Error("No token provided"));
+  // Middleware xác thực token và attach user + events ngay
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error("No token provided"));
 
-      const decoded = jwt.decode(token);
-      socket.user = decoded; // gán thông tin user vào socket
+    try {
+      const decoded = jwt.decode(token); // Chỉ decode, không verify
+      if (!decoded) return next(new Error("Invalid token"));
+
+      // Gán user vào socket
+      socket.user = {
+        keycloakId: decoded.sub,
+        username: decoded.preferred_username,
+        email: decoded.email,
+        roles: decoded.realm_access?.roles || [],
+      };
+
+      console.log(`✅ Authenticated via Keycloak: ${socket.user.username}`);
+
+      // Attach chat & call events ngay khi user đã có
+      chatEvents(socket, io);
+      callEvents(socket, io);
+
       next();
     } catch (err) {
+      console.error("❌ Token decode error:", err);
       next(new Error("Socket authentication failed"));
     }
   });
 
   io.on("connection", async (socket) => {
-    const user_id = socket.user?.sub || socket.handshake.query["user_id"];
-    console.log(`🔌 User connected: ${user_id} (${socket.id})`);
+    const { keycloakId, username } = socket.user || {};
 
-    if (user_id) {
-      await User.findByIdAndUpdate(user_id, { socket_id: socket.id, status: "Online" });
+    if (!keycloakId) {
+      console.warn("Socket connected without user info!");
+      return;
     }
 
-    // Import các event handlers
-    chatEvents(socket, io);
-    callEvents(socket, io);
+    console.log(`🔌 User connected: ${keycloakId} (${socket.id})`);
 
-    // Xử lý disconnect
+    // Cập nhật trạng thái user
+    await User.findOneAndUpdate(
+      { keycloakId },
+      { socketId: socket.id, status: "Online", lastSeen: new Date() }
+    );
+
+    io.emit("presence_update", { userId: keycloakId, status: "Online" });
+
+    // Ghi log kết nối
+    try {
+      await AuditLog.create({
+        user: keycloakId,
+        action: "user_connected",
+        metadata: { socketId: socket.id },
+        ip: socket.handshake.address,
+      });
+    } catch (err) {
+      console.error("❌ AuditLog error:", err.message);
+    }
+
+    // Khi disconnect
     socket.on("disconnect", async () => {
-      if (user_id) await User.findByIdAndUpdate(user_id, { status: "Offline" });
-      console.log(`❌ User disconnected: ${user_id}`);
+      await User.findOneAndUpdate({ keycloakId }, { status: "Offline" });
+      io.emit("presence_update", { userId: keycloakId, status: "Offline" });
+
+      try {
+        await AuditLog.create({
+          user: keycloakId,
+          action: "user_disconnected",
+          metadata: {},
+        });
+      } catch (err) {
+        console.error("❌ AuditLog error:", err.message);
+      }
+
+      console.log(`❌ User disconnected: ${username || keycloakId}`);
     });
   });
 

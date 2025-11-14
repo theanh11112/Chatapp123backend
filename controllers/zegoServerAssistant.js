@@ -1,3 +1,5 @@
+// module Node.js dùng để sinh token mã hóa (token động), xác thực người dùng khi kết nối WebSocket (Socket.IO) hoặc API backend.
+
 "use strict";
 exports.__esModule = true;
 var crypto_1 = require("crypto");

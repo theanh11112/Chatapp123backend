@@ -77,11 +77,11 @@ app.use(limiter);
 // ==================
 // 🧭 Gắn routes cho từng role
 // ==================
-app.use("/api/admin", adminRoutes(keycloak));
-app.use("/api/moderator", moderatorRoutes(keycloak));
-app.use("/api/user", userRoutes(keycloak));
-app.use("/api/guest", guestRoutes(keycloak));
-app.use("/api/bot", botRoutes(keycloak));
+app.use("/admin", adminRoutes(keycloak));
+app.use("/moderator", moderatorRoutes(keycloak));
+app.use("/users", userRoutes(keycloak));
+app.use("/guest", guestRoutes(keycloak));
+app.use("/bot", botRoutes(keycloak));
 
 // ==================
 // 🧱 Kiểm tra API mặc định
