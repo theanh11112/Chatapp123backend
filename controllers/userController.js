@@ -15,9 +15,19 @@ exports.getMe = catchAsync(async (req, res) => {
 exports.getProfile = exports.getMe;
 
 exports.updateMe = catchAsync(async (req, res) => {
-  const filteredBody = filterObj(req.body, "firstName", "lastName", "about", "avatar");
-  const userDoc = await User.findByIdAndUpdate(req.user._id, filteredBody, { new: true });
-  res.status(200).json({ message: "Cập nhật thông tin thành công", data: userDoc });
+  const filteredBody = filterObj(
+    req.body,
+    "firstName",
+    "lastName",
+    "about",
+    "avatar"
+  );
+  const userDoc = await User.findByIdAndUpdate(req.user._id, filteredBody, {
+    new: true,
+  });
+  res
+    .status(200)
+    .json({ message: "Cập nhật thông tin thành công", data: userDoc });
 });
 
 // Alias cho route "/me" PATCH
@@ -27,7 +37,9 @@ exports.updateProfile = exports.updateMe;
 exports.createRoom = catchAsync(async (req, res) => {
   const { name, members } = req.body;
   const newRoom = await Room.create({ name, members, createdBy: req.user._id });
-  res.status(201).json({ message: "Đã tạo phòng nhóm thành công", data: newRoom });
+  res
+    .status(201)
+    .json({ message: "Đã tạo phòng nhóm thành công", data: newRoom });
 });
 
 // Alias cho route "/room" POST private room
