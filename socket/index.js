@@ -1,10 +1,11 @@
 // initSocket.js
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
+const AuditLog = require("../models/auditLog");
+const User = require("../models/user");
 
 const chatEvents = require("./events/chat");
 const callEvents = require("./events/call");
-const AuditLog = require("../models/auditLog");
 const { syncUserFromToken } = require("../utils/auth");
 
 const initSocket = (server) => {
@@ -12,77 +13,107 @@ const initSocket = (server) => {
     cors: { origin: "*", methods: ["GET", "POST"] },
   });
 
-  // Middleware xác thực token và sync user async
+  // -----------------------------
+  //  MIDDLEWARE AUTH SOCKET
+  // -----------------------------
   io.use(async (socket, next) => {
-    const token = socket.handshake.auth?.token;
-    if (!token) return next(new Error("No token provided"));
-
     try {
-      const decoded = jwt.decode(token); // chỉ decode, không verify
+      const token = socket.handshake.auth?.token;
+      if (!token) return next(new Error("No token provided"));
+
+      const decoded = jwt.decode(token);
       if (!decoded) return next(new Error("Invalid token"));
 
-      // Đồng bộ user với DB
+      // Đồng bộ user vào DB
       const user = await syncUserFromToken(decoded, {
         defaultStatus: "Online",
       });
 
-      // Cập nhật socketId và trạng thái
-      user.socketId = socket.id;
+      // Gắn socketId cho multi-device
+      if (!user.socketIds) user.socketIds = [];
+      if (!user.socketIds.includes(socket.id)) user.socketIds.push(socket.id);
+
       user.status = "Online";
-      user.lastSeen = new Date();
       await user.save();
 
       socket.user = user;
+      console.log(
+        `✅ Authenticated: ${user.username} (socketId: ${socket.id})`
+      );
 
-      console.log(`✅ Socket authenticated & user synced: ${user.username}`);
-
-      // Attach chat & call events ngay khi user đã có
+      // Gắn sự kiện chat & call
       chatEvents(socket, io);
       callEvents(socket, io);
 
+      // Broadcast realtime cho tất cả bạn bè hoặc toàn bộ app
+      io.emit("user_online", {
+        userId: user.keycloakId,
+        username: user.username,
+        avatar: user.avatar,
+      });
+
       next();
     } catch (err) {
-      console.error("❌ Socket auth error:", err);
+      console.error("❌ Socket auth failed:", err);
       next(new Error("Socket authentication failed"));
     }
   });
 
+  // -----------------------------
+  //  ON CONNECTION
+  // -----------------------------
   io.on("connection", (socket) => {
-    const { keycloakId, username } = socket.user || {};
+    const { keycloakId, username } = socket.user;
 
-    if (!keycloakId) {
-      console.warn("Socket connected without user info!");
-      return;
-    }
+    console.log(`🔌 Connected: ${keycloakId} (${socket.id})`);
 
-    console.log(`🔌 User connected: ${keycloakId} (${socket.id})`);
-
-    io.emit("presence_update", { userId: keycloakId, status: "Online" });
-
-    // Ghi log kết nối
+    // Ghi log connection
     AuditLog.create({
       user: keycloakId,
       action: "user_connected",
       metadata: { socketId: socket.id },
       ip: socket.handshake.address,
-    }).catch((err) => console.error("❌ AuditLog error:", err.message));
+    }).catch((err) => console.error("AuditLog error:", err.message));
 
-    // Khi disconnect
+    // -----------------------------
+    //  ON DISCONNECT
+    // -----------------------------
     socket.on("disconnect", async () => {
       try {
-        socket.user.status = "Offline";
-        socket.user.socketId = null;
-        await socket.user.save();
+        const user = await User.findOne({ keycloakId });
+        if (!user) return;
 
-        io.emit("presence_update", { userId: keycloakId, status: "Offline" });
+        // Xóa socketId hiện tại
+        user.socketIds = (user.socketIds || []).filter(
+          (id) => id !== socket.id
+        );
 
+        // Nếu còn socketId khác → vẫn online
+        if (user.socketIds.length === 0) {
+          user.status = "Offline";
+          user.lastSeen = new Date();
+        }
+
+        await user.save();
+
+        // Broadcast realtime offline chỉ khi user thực sự offline
+        if (user.socketIds.length === 0) {
+          io.emit("user_offline", {
+            userId: keycloakId,
+            lastSeen: user.lastSeen,
+          });
+        }
+
+        // Ghi log disconnect
         await AuditLog.create({
           user: keycloakId,
           action: "user_disconnected",
-          metadata: {},
+          metadata: { socketId: socket.id },
         });
 
-        console.log(`❌ User disconnected: ${username || keycloakId}`);
+        console.log(
+          `❌ Disconnected: ${username || keycloakId} (socketId: ${socket.id})`
+        );
       } catch (err) {
         console.error("❌ Disconnect error:", err.message);
       }

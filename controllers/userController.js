@@ -7,8 +7,30 @@ const catchAsync = require("../utils/catchAsync");
 const filterObj = require("../utils/filterObj");
 
 // -------------------- Profile --------------------
-exports.getMe = catchAsync(async (req, res) => {
-  res.status(200).json({ status: "success", data: req.user });
+exports.getMe = catchAsync(async (req, res, next) => {
+  const keycloakId = req.user?.keycloakId || req.user?.id; // tùy payload middleware
+
+  if (!keycloakId) {
+    return res.status(400).json({
+      status: "fail",
+      message: "User ID not found in token",
+    });
+  }
+
+  // Tìm user trong database bằng keycloakId
+  const user = await User.findOne({ keycloakId });
+
+  if (!user) {
+    return res.status(404).json({
+      status: "fail",
+      message: "User not found in database",
+    });
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: user,
+  });
 });
 
 // Alias cho route "/me" GET

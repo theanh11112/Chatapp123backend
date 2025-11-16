@@ -2,7 +2,7 @@ const User = require("../../models/user");
 const OneToOneMessage = require("../../models/OneToOneMessage");
 const FriendRequest = require("../../models/friendRequest");
 const AuditLog = require("../../models/auditLog");
-
+const { pushMessage } = require("../../models/OneToOneMessage.helper");
 module.exports = (socket, io) => {
   const currentUserId = socket.user?.keycloakId;
   if (!currentUserId)
@@ -34,15 +34,22 @@ module.exports = (socket, io) => {
       // 3) Lấy thông tin user
       const users = await User.find({
         keycloakId: { $in: allUserIds },
-      }).select("username email keycloakId avatar");
+      }).select("username email keycloakId avatar socketId status lastSeen");
 
       // 4) Map userId → thông tin user
       const userMap = {};
       users.forEach((u) => {
-        userMap[u.keycloakId] = u;
+        userMap[u.keycloakId] = {
+          keycloakId: u.keycloakId,
+          username: u.username,
+          email: u.email,
+          avatar: u.avatar,
+          status: u.status || "Offline",
+          lastSeen: u.lastSeen || null,
+        };
       });
 
-      // 5) Gắn lại participants thành object thay vì chỉ là string
+      // 5) Gắn lại participants thành object đầy đủ
       const finalResult = conversations.map((conv) => ({
         ...conv.toObject(),
         participants: conv.participants.map(
@@ -75,7 +82,7 @@ module.exports = (socket, io) => {
   // ---------------- Send Message ----------------
   socket.on(
     "text_message",
-    async ({ conversation_id, to, message, type }, callback) => {
+    async ({ id, conversation_id, to, message, type }, callback) => {
       try {
         if (!to || !message) {
           return callback?.({
@@ -85,13 +92,14 @@ module.exports = (socket, io) => {
         }
 
         const toId = to.toString();
-
         const msgType =
           type && ALLOWED_MSG_TYPES.includes(type.trim().toLowerCase())
             ? type.trim().toLowerCase()
             : "text";
 
+        // Tạo message object (không dùng ObjectId, chỉ dùng string UUID)
         const newMessage = {
+          _id: id || undefined, // ⚡ id duy nhất, nếu client không gửi thì pushMessage tạo UUID
           from: currentUserId,
           to: toId,
           type: msgType,
@@ -100,26 +108,11 @@ module.exports = (socket, io) => {
           seen: false,
         };
 
-        // Tìm hoặc tạo conversation
-        let chat = conversation_id
-          ? await OneToOneMessage.findById(conversation_id)
-          : await OneToOneMessage.findOne({
-              participants: { $all: [currentUserId, toId] },
-            });
+        // ====================== Dùng pushMessage ======================
+        const chat = await pushMessage([currentUserId, toId], newMessage);
 
-        if (!chat) {
-          chat = await OneToOneMessage.create({
-            participants: [currentUserId, toId],
-            messages: [],
-          });
-        }
-
-        chat.messages.push(newMessage);
-        await chat.save();
-
-        // Gửi real-time
+        // Gửi realtime cho người nhận
         const toUser = await User.findOne({ keycloakId: toId });
-
         if (toUser?.socketId) {
           io.to(toUser.socketId).emit("new_message", {
             conversation_id: chat._id,
@@ -127,11 +120,13 @@ module.exports = (socket, io) => {
           });
         }
 
+        // Gửi realtime cho sender
         socket.emit("new_message", {
           conversation_id: chat._id,
           message: newMessage,
         });
 
+        // Lưu audit log
         await AuditLog.create({
           user: currentUserId,
           action: "send_message",
@@ -190,7 +185,7 @@ module.exports = (socket, io) => {
       // Populate participants info
       const users = await User.find({
         keycloakId: { $in: conversation.participants },
-      }).select("username email keycloakId avatar socketId");
+      }).select("username email keycloakId avatar socketId status lastSeen");
 
       const mapUsers = users.reduce((acc, user) => {
         acc[user.keycloakId] = {
@@ -198,6 +193,8 @@ module.exports = (socket, io) => {
           username: user.username,
           avatar: user.avatar,
           email: user.email,
+          status: user.status || "Offline",
+          lastSeen: user.lastSeen || null,
         };
         return acc;
       }, {});
