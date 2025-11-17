@@ -24,33 +24,16 @@ const initSocket = (server) => {
       const decoded = jwt.decode(token);
       if (!decoded) return next(new Error("Invalid token"));
 
-      // Đồng bộ user vào DB
+      // Đồng bộ user vào DB với socketId hiện tại - ĐÃ SỬA
       const user = await syncUserFromToken(decoded, {
         defaultStatus: "Online",
+        socketId: socket.id, // ← THÊM socketId vào đây
       });
-
-      // Gắn socketId cho multi-device
-      if (!user.socketIds) user.socketIds = [];
-      if (!user.socketIds.includes(socket.id)) user.socketIds.push(socket.id);
-
-      user.status = "Online";
-      await user.save();
 
       socket.user = user;
       console.log(
         `✅ Authenticated: ${user.username} (socketId: ${socket.id})`
       );
-
-      // Gắn sự kiện chat & call
-      chatEvents(socket, io);
-      callEvents(socket, io);
-
-      // Broadcast realtime cho tất cả bạn bè hoặc toàn bộ app
-      io.emit("user_online", {
-        userId: user.keycloakId,
-        username: user.username,
-        avatar: user.avatar,
-      });
 
       next();
     } catch (err) {
@@ -66,6 +49,18 @@ const initSocket = (server) => {
     const { keycloakId, username } = socket.user;
 
     console.log(`🔌 Connected: ${keycloakId} (${socket.id})`);
+
+    // Gắn sự kiện chat & call SAU KHI connection hoàn tất - ĐÃ SỬA
+    chatEvents(socket, io);
+    callEvents(socket, io);
+
+    // Broadcast realtime cho tất cả bạn bè hoặc toàn bộ app - ĐÃ SỬA
+    socket.broadcast.emit("user_online", {
+      userId: socket.user.keycloakId,
+      username: socket.user.username,
+      avatar: socket.user.avatar,
+      socketId: socket.id, // ← THÊM socketId mới nhất
+    });
 
     // Ghi log connection
     AuditLog.create({
@@ -83,22 +78,15 @@ const initSocket = (server) => {
         const user = await User.findOne({ keycloakId });
         if (!user) return;
 
-        // Xóa socketId hiện tại
-        user.socketIds = (user.socketIds || []).filter(
-          (id) => id !== socket.id
-        );
-
-        // Nếu còn socketId khác → vẫn online
-        if (user.socketIds.length === 0) {
+        // Chỉ cập nhật nếu socketId disconnect là socketId hiện tại - ĐÃ SỬA
+        if (user.socketId === socket.id) {
+          user.socketId = null; // ← RESET socketId
           user.status = "Offline";
           user.lastSeen = new Date();
-        }
+          await user.save();
 
-        await user.save();
-
-        // Broadcast realtime offline chỉ khi user thực sự offline
-        if (user.socketIds.length === 0) {
-          io.emit("user_offline", {
+          // Broadcast realtime offline - ĐÃ SỬA
+          socket.broadcast.emit("user_offline", {
             userId: keycloakId,
             lastSeen: user.lastSeen,
           });

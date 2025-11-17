@@ -46,10 +46,10 @@ async function syncUserFromToken(tokenParsed, options = {}) {
       isActive: true,
       lastSeen: new Date(),
       lastLoginAt: new Date(),
-      socketId: socketId || null,
+      socketId: socketId || null, // ← ĐÃ SỬA: Luôn cập nhật socketId
       deviceInfo: deviceInfo ? [deviceInfo] : [],
     });
-    console.log(`✅ Created new user: ${username}`);
+    console.log(`✅ Created new user: ${username} with socketId: ${socketId}`); // ← ĐÃ SỬA: Thêm log socketId
   } else {
     user.username = username;
     user.fullName = fullName;
@@ -60,14 +60,19 @@ async function syncUserFromToken(tokenParsed, options = {}) {
     user.lastSeen = new Date();
     user.lastLoginAt = new Date();
 
-    if (socketId) user.socketId = socketId;
+    // QUAN TRỌNG: Luôn cập nhật socketId mới nhất - ĐÃ SỬA
+    if (socketId) {
+      user.socketId = socketId;
+      console.log(
+        `🔄 Updated user: ${username} with NEW socketId: ${socketId}`
+      ); // ← ĐÃ SỬA: Thêm log socketId mới
+    }
 
     if (deviceInfo) {
       user.deviceInfo.push(deviceInfo);
     }
 
     await user.save();
-    console.log(`🔄 Updated user: ${username}`);
   }
 
   return user;

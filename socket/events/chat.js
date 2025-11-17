@@ -80,6 +80,7 @@ module.exports = (socket, io) => {
   });
 
   // ---------------- Send Message ----------------
+  // ---------------- Send Message ----------------
   socket.on(
     "text_message",
     async ({ id, conversation_id, to, message, type }, callback) => {
@@ -111,19 +112,40 @@ module.exports = (socket, io) => {
         // ====================== Dùng pushMessage ======================
         const chat = await pushMessage([currentUserId, toId], newMessage);
 
+        // 🔥 SỬA QUAN TRỌNG: Tạo message object đầy đủ để gửi realtime
+        const messageForReceiver = {
+          _id: newMessage._id, // Đảm bảo có _id
+          id: newMessage._id, // Và cả id cho frontend
+          from: currentUserId,
+          to: toId, // ← QUAN TRỌNG: Đảm bảo có trường 'to'
+          type: msgType,
+          content: message,
+          text: message, // ← Thêm trường text để tương thích
+          createdAt: new Date(),
+          seen: false,
+          attachments: [], // ← Thêm trường attachments rỗng
+        };
+
+        const messageForSender = {
+          ...messageForReceiver,
+          // Có thể thêm các field đặc biệt cho sender nếu cần
+        };
+
         // Gửi realtime cho người nhận
         const toUser = await User.findOne({ keycloakId: toId });
+
         if (toUser?.socketId) {
           io.to(toUser.socketId).emit("new_message", {
             conversation_id: chat._id,
-            message: newMessage,
+            message: messageForReceiver, // ← DÙNG message đầy đủ
           });
         }
 
         // Gửi realtime cho sender
+
         socket.emit("new_message", {
           conversation_id: chat._id,
-          message: newMessage,
+          message: messageForSender, // ← DÙNG message đầy đủ
         });
 
         // Lưu audit log
