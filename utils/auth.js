@@ -85,6 +85,7 @@ function requireRole(...allowedRoles) {
   return (req, res, next) => {
     const userRoles = req.user?.roles || [];
     const hasRole = allowedRoles.some((role) => userRoles.includes(role));
+    console.log("123", userRoles, allowedRoles, hasRole);
     if (!hasRole) {
       return res
         .status(403)

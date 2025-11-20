@@ -6,6 +6,7 @@ const User = require("../models/user");
 
 const chatEvents = require("./events/chat");
 const callEvents = require("./events/call");
+const groupChatEvents = require("./events/groupChat");
 const { syncUserFromToken } = require("../utils/auth");
 
 const initSocket = (server) => {
@@ -53,6 +54,7 @@ const initSocket = (server) => {
     // Gắn sự kiện chat & call SAU KHI connection hoàn tất - ĐÃ SỬA
     chatEvents(socket, io);
     callEvents(socket, io);
+    groupChatEvents(socket, io);
 
     // Broadcast realtime cho tất cả bạn bè hoặc toàn bộ app - ĐÃ SỬA
     socket.broadcast.emit("user_online", {
