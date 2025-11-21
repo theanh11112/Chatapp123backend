@@ -75,7 +75,7 @@ module.exports = (socket, io) => {
 
   socket.on("group_message", async (data, callback) => {
     try {
-      console.log("📨 Received group_message:", data);
+      console.log("📨 Received group_message:", data.sender);
 
       const {
         roomId,
@@ -115,7 +115,11 @@ module.exports = (socket, io) => {
         room: roomIdObj,
         content: message,
         type: type,
-        sender: sender.keycloakId,
+        sender: {
+          // 🆕 SỬA: TRUYỀN OBJECT
+          id: sender.keycloakId,
+          name: sender.username,
+        },
       });
 
       // 🆕 Cập nhật lastMessage cho room
@@ -159,6 +163,134 @@ module.exports = (socket, io) => {
       });
     } catch (err) {
       console.error("❌ Error group_message:", err);
+      callback?.({
+        success: false,
+        error: err.message,
+      });
+    }
+  });
+
+  // server/sockets/groupChat.js - THÊM PHẦN NÀY
+  socket.on("group_message_reply", async (data, callback) => {
+    try {
+      console.log("📨 Received group_message_reply:", data);
+
+      const {
+        roomId,
+        message,
+        type = "reply",
+        messageId,
+        timestamp,
+        sender,
+        replyTo,
+        replyContent,
+        replySender,
+      } = data;
+
+      const roomIdObj = new mongoose.Types.ObjectId(roomId);
+
+      // Validate required fields
+      if (!roomIdObj || !message || !replyTo) {
+        console.log("❌ Missing required fields for reply:", {
+          roomId,
+          message,
+          replyTo,
+        });
+        return callback?.({
+          success: false,
+          error: "Missing roomId, message or replyTo",
+        });
+      }
+
+      // Kiểm tra room tồn tại và user có trong room không
+      const room = await Room.findOne({
+        _id: roomIdObj,
+        members: sender.keycloakId,
+      });
+
+      if (!room) {
+        console.log("❌ Room not found or user not in room:", roomIdObj);
+        return callback?.({
+          success: false,
+          error: "Room not found or access denied",
+        });
+      }
+
+      // 🆕 SỬA: Tạo sender object đầy đủ theo schema requirements
+      const senderData = {
+        id: sender.keycloakId, // 🆕 THÊM: id bắt buộc
+        name: sender.username, // 🆕 THÊM: name bắt buộc
+        keycloakId: sender.keycloakId,
+        username: sender.username,
+        avatar: sender.avatar || null,
+      };
+
+      // 🆕 Tạo reply message trong Message collection
+      const newMessage = await Message.create({
+        room: roomIdObj,
+        content: message,
+        type: "reply",
+        sender: senderData, // 🆕 SỬA: Dùng senderData đầy đủ
+        replyTo: replyTo,
+        replyContent: replyContent,
+        replySender: replySender,
+      });
+
+      // 🆕 Cập nhật lastMessage cho room
+      await Room.findByIdAndUpdate(roomIdObj, {
+        lastMessage: newMessage._id,
+        updatedAt: new Date(),
+      });
+
+      console.log("✅ Reply message saved to DB:", newMessage._id);
+
+      // 🆕 Populate thông tin reply
+      const populatedMessage = await Message.findById(newMessage._id)
+        .populate("replyTo", "content sender type")
+        .exec();
+
+      // 🆕 Chuẩn bị message data để gửi realtime
+      const messageForClients = {
+        _id: newMessage._id,
+        id: newMessage._id.toString(),
+        content: newMessage.content,
+        type: newMessage.type,
+        sender: {
+          id: sender.keycloakId, // 🆕 THÊM: id
+          name: sender.username, // 🆕 THÊM: name
+          keycloakId: sender.keycloakId,
+          username: sender.username,
+          avatar: sender.avatar || null,
+        },
+        room: roomId,
+        replyTo: {
+          id: replyTo,
+          content: replyContent,
+          sender: replySender,
+          type: "text",
+        },
+        createdAt: newMessage.createdAt,
+        updatedAt: newMessage.updatedAt,
+      };
+
+      console.log("📤 Broadcasting reply to room:", roomId, messageForClients);
+
+      // 🆕 Broadcast reply message đến tất cả thành viên trong room
+      io.to(roomId).emit("new_group_message", {
+        roomId: roomId,
+        message: messageForClients,
+      });
+
+      console.log("✅ Reply message sent and broadcasted successfully");
+
+      // 🆕 Response success
+      callback?.({
+        success: true,
+        message: "Reply message sent successfully",
+        data: messageForClients,
+      });
+    } catch (err) {
+      console.error("❌ Error group_message_reply:", err);
       callback?.({
         success: false,
         error: err.message,

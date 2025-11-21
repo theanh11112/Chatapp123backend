@@ -222,7 +222,6 @@ exports.getRoomMessages = catchAsync(async (req, res) => {
   const user = await getUserFromToken(req);
   if (!user) return res.status(404).json({ message: "User not found" });
 
-  // 🆕 SỬA: Convert roomId string thành ObjectId để query
   const roomObjectId = new mongoose.Types.ObjectId(roomId);
 
   const room = await Room.findOne({
@@ -233,30 +232,130 @@ exports.getRoomMessages = catchAsync(async (req, res) => {
 
   const skip = (page - 1) * limit;
 
-  // 🆕 SỬA: Sử dụng roomObjectId thay vì roomId string
+  // 🆕 SỬA QUAN TRỌNG: Populate replyTo với thông tin đầy đủ
   let messages = await Message.find({ room: roomObjectId })
     .populate("sender", "keycloakId username firstName lastName avatar")
-    .populate("replyTo")
+    .populate({
+      path: "replyTo",
+      select: "content sender type createdAt",
+      populate: {
+        path: "sender",
+        select: "keycloakId username firstName lastName avatar",
+      },
+    })
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit);
 
   console.log("🔍 Messages found:", messages.length);
-  console.log("🔍 Query details:", {
-    roomId: roomId,
-    roomObjectId: roomObjectId,
-    roomExists: !!room,
+
+  // 🆕 THÊM: Log để debug replyTo
+  messages.forEach((msg, index) => {
+    if (msg.replyTo) {
+      console.log(`🔍 Message ${index} has replyTo:`, {
+        message_id: msg._id,
+        replyTo_id: msg.replyTo?._id,
+        replyTo_content: msg.replyTo?.content,
+        replyTo_sender: msg.replyTo?.sender,
+      });
+    }
   });
 
   messages = messages.reverse();
 
+  // 🆕 SỬA: Transform messages để có structure giống socket
+  const transformedMessages = messages.map((msg) => {
+    const messageObj = msg.toObject ? msg.toObject() : { ...msg };
+
+    // 🆕 XỬ LÝ REPLYTO - TẠO OBJECT ĐẦY ĐỦ
+    let processedReplyTo = null;
+    if (messageObj.replyTo) {
+      console.log("🔄 Processing replyTo for API response:", {
+        message_id: messageObj._id,
+        replyTo_data: messageObj.replyTo,
+      });
+
+      if (typeof messageObj.replyTo === "object" && messageObj.replyTo._id) {
+        // Đã populate replyTo - tạo object đầy đủ
+        processedReplyTo = {
+          id: messageObj.replyTo._id,
+          content:
+            messageObj.replyTo.content ||
+            messageObj.replyContent ||
+            "Original message",
+          sender: messageObj.replyTo.sender ||
+            messageObj.replySender || {
+              keycloakId: "unknown",
+              username: "Unknown",
+            },
+          type: messageObj.replyTo.type || messageObj.replyType || "text",
+        };
+      } else if (typeof messageObj.replyTo === "string") {
+        // Chỉ có ID - tạo object với thông tin có sẵn
+        processedReplyTo = {
+          id: messageObj.replyTo,
+          content: messageObj.replyContent || "Original message",
+          sender: messageObj.replySender || {
+            keycloakId: "unknown",
+            username: "Unknown",
+          },
+          type: messageObj.replyType || "text",
+        };
+      }
+    }
+
+    // 🆕 TẠO MESSAGE STRUCTURE ĐỒNG NHẤT VỚI SOCKET
+    return {
+      _id: messageObj._id,
+      id: messageObj._id.toString(),
+      type: "msg",
+      subtype: messageObj.type || "text",
+      message: messageObj.content || "",
+      content: messageObj.content || "",
+      incoming: messageObj.sender?.keycloakId !== user.keycloakId,
+      outgoing: messageObj.sender?.keycloakId === user.keycloakId,
+      time: formatMessageTime(messageObj.createdAt),
+      createdAt: messageObj.createdAt,
+      attachments: messageObj.attachments || [],
+      sender: messageObj.sender || {
+        keycloakId: "unknown",
+        username: "Unknown",
+      },
+      // 🆕 THÊM REPLYTO ĐÃ XỬ LÝ
+      replyTo: processedReplyTo,
+      replyContent: messageObj.replyContent,
+      replySender: messageObj.replySender,
+      replyType: messageObj.replyType,
+    };
+  });
+
+  console.log("✅ Transformed messages for API:", {
+    total: transformedMessages.length,
+    with_reply: transformedMessages.filter((m) => m.replyTo).length,
+  });
+
   res.status(200).json({
     status: "success",
-    results: messages.length,
+    results: transformedMessages.length,
     pagination: { page, limit },
-    data: messages,
+    data: transformedMessages,
   });
 });
+
+// 🆕 THÊM: Hàm format message time
+const formatMessageTime = (timestamp) => {
+  if (!timestamp) return "";
+  try {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch (error) {
+    console.error("Error formatting time:", error);
+    return "";
+  }
+};
 
 /*
 |--------------------------------------------------------------------------

@@ -3,6 +3,7 @@ const OneToOneMessage = require("../../models/OneToOneMessage");
 const FriendRequest = require("../../models/friendRequest");
 const AuditLog = require("../../models/auditLog");
 const { pushMessage } = require("../../models/OneToOneMessage.helper");
+const { v4: uuidv4 } = require("uuid");
 module.exports = (socket, io) => {
   const currentUserId = socket.user?.keycloakId;
   if (!currentUserId)
@@ -98,9 +99,9 @@ module.exports = (socket, io) => {
             ? type.trim().toLowerCase()
             : "text";
 
-        // Tạo message object (không dùng ObjectId, chỉ dùng string UUID)
+        // Tạo message object
         const newMessage = {
-          _id: id || undefined, // ⚡ id duy nhất, nếu client không gửi thì pushMessage tạo UUID
+          _id: id || undefined,
           from: currentUserId,
           to: toId,
           type: msgType,
@@ -108,44 +109,70 @@ module.exports = (socket, io) => {
           createdAt: new Date(),
           seen: false,
         };
+        console.log("📨 Received text_message:", newMessage);
 
-        // ====================== Dùng pushMessage ======================
+        // Dùng pushMessage
         const chat = await pushMessage([currentUserId, toId], newMessage);
 
-        // 🔥 SỬA QUAN TRỌNG: Tạo message object đầy đủ để gửi realtime
-        const messageForReceiver = {
-          _id: newMessage._id, // Đảm bảo có _id
-          id: newMessage._id, // Và cả id cho frontend
-          from: currentUserId,
-          to: toId, // ← QUAN TRỌNG: Đảm bảo có trường 'to'
-          type: msgType,
+        // 🆕 SỬA QUAN TRỌNG: Tạo message object đầy đủ với đúng structure
+        const messageData = {
+          _id: newMessage._id,
+          id: newMessage._id,
+          message: message,
           content: message,
-          text: message, // ← Thêm trường text để tương thích
+          type: "msg",
+          subtype: msgType,
+          from: currentUserId,
+          to: toId,
+          conversation_id: chat._id.toString(), // 🆕 THÊM conversation_id
+          time: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
           createdAt: new Date(),
-          seen: false,
-          attachments: [], // ← Thêm trường attachments rỗng
+          incoming: false,
+          outgoing: true,
+          attachments: [],
+          sender: {
+            keycloakId: currentUserId,
+            username: socket.user?.username || "Unknown",
+            name: socket.user?.name || socket.user?.username || "Unknown",
+          },
         };
 
-        const messageForSender = {
-          ...messageForReceiver,
-          // Có thể thêm các field đặc biệt cho sender nếu cần
-        };
+        console.log("✅ Prepared message data for realtime:", {
+          conversation_id: chat._id,
+          message_id: messageData.id,
+          from: currentUserId,
+          to: toId,
+        });
 
-        // Gửi realtime cho người nhận
+        // 🆕 SỬA: Gửi event "text_message" thay vì "new_message"
         const toUser = await User.findOne({ keycloakId: toId });
 
         if (toUser?.socketId) {
-          io.to(toUser.socketId).emit("new_message", {
-            conversation_id: chat._id,
-            message: messageForReceiver, // ← DÙNG message đầy đủ
-          });
+          console.log("🚀 Emitting text_message to receiver:", toUser.socketId);
+          io.to(toUser.socketId).emit("text_message", messageData);
         }
 
-        // Gửi realtime cho sender
+        // Gửi lại cho sender để confirm
+        console.log("🚀 Emitting text_message to sender:", socket.id);
+        socket.emit("text_message", {
+          ...messageData,
+          incoming: false,
+          outgoing: true,
+        });
 
+        // 🆕 THÊM: Gửi cả event "new_message" để tương thích ngược (nếu cần)
+        if (toUser?.socketId) {
+          io.to(toUser.socketId).emit("new_message", {
+            conversation_id: chat._id,
+            message: messageData,
+          });
+        }
         socket.emit("new_message", {
           conversation_id: chat._id,
-          message: messageForSender, // ← DÙNG message đầy đủ
+          message: messageData,
         });
 
         // Lưu audit log
@@ -164,6 +191,121 @@ module.exports = (socket, io) => {
     }
   );
 
+  // server/sockets/directChat.js - THÊM PHẦN NÀY
+  socket.on("text_message_reply", async (data, callback) => {
+    try {
+      console.log("📨 Received text_message_reply:", data);
+
+      const {
+        conversation_id,
+        message,
+        from,
+        to,
+        messageId,
+        replyTo,
+        replyContent,
+        replySender,
+      } = data;
+
+      // Validate required fields
+      if (!conversation_id || !message || !from || !to || !replyTo) {
+        console.log("❌ Missing required fields for reply");
+        return callback?.({
+          success: false,
+          error: "Missing required fields",
+        });
+      }
+
+      const conversation = await OneToOneMessage.findById(conversation_id);
+
+      if (!conversation) {
+        console.log("❌ Conversation not found:", conversation_id);
+        return callback?.({
+          success: false,
+          error: "Conversation not found",
+        });
+      }
+
+      // Tạo message với type "reply"
+      const newMessage = {
+        _id: messageId || uuidv4(),
+        from: from,
+        to: to,
+        type: "reply",
+        content: message,
+        replyTo: replyTo,
+        replyContent: replyContent,
+        replySender: replySender,
+        createdAt: new Date(),
+      };
+
+      conversation.messages.push(newMessage);
+      await conversation.save();
+
+      console.log("✅ Direct reply message saved to DB:", newMessage._id);
+
+      // 🆕 SỬA: Tạo message data đầy đủ với đúng structure
+      const messageData = {
+        _id: newMessage._id,
+        id: newMessage._id.toString(),
+        message: message,
+        content: message,
+        type: "msg",
+        subtype: "reply",
+        from: from,
+        to: to,
+        conversation_id: conversation_id, // 🆕 THÊM conversation_id
+        time: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+        createdAt: newMessage.createdAt,
+        incoming: false,
+        outgoing: true,
+        attachments: [],
+        replyTo: {
+          id: replyTo,
+          content: replyContent,
+          sender: replySender,
+        },
+        sender: {
+          keycloakId: from,
+          username: data.sender?.username || "Unknown",
+          name: data.sender?.name || data.sender?.username || "Unknown",
+        },
+      };
+
+      console.log("✅ Prepared reply message data for realtime:", {
+        conversation_id: conversation_id,
+        message_id: messageData.id,
+        from: from,
+        to: to,
+        is_reply: true,
+      });
+
+      // 🆕 SỬA: Gửi event "text_message_reply" và "text_message"
+      const toUser = await User.findOne({ keycloakId: to });
+
+      // Gửi event chính cho cả sender và receiver
+      io.to(toUser.socketId).emit("text_message_reply", messageData);
+
+      console.log(
+        "✅ Direct reply message sent successfully via multiple events"
+      );
+
+      callback?.({
+        success: true,
+        message: "Reply message sent successfully",
+        data: messageData,
+      });
+    } catch (err) {
+      console.error("❌ Error text_message_reply:", err);
+      callback?.({
+        success: false,
+        error: err.message,
+      });
+    }
+  });
   // ---------------- Typing Indicator ----------------
   socket.on("typing_start", ({ roomId }) => {
     if (roomId)
