@@ -250,16 +250,6 @@ exports.getRoomMessages = catchAsync(async (req, res) => {
   console.log("🔍 Messages found:", messages.length);
 
   // 🆕 THÊM: Log để debug replyTo
-  messages.forEach((msg, index) => {
-    if (msg.replyTo) {
-      console.log(`🔍 Message ${index} has replyTo:`, {
-        message_id: msg._id,
-        replyTo_id: msg.replyTo?._id,
-        replyTo_content: msg.replyTo?.content,
-        replyTo_sender: msg.replyTo?.sender,
-      });
-    }
-  });
 
   messages = messages.reverse();
 
@@ -270,11 +260,6 @@ exports.getRoomMessages = catchAsync(async (req, res) => {
     // 🆕 XỬ LÝ REPLYTO - TẠO OBJECT ĐẦY ĐỦ
     let processedReplyTo = null;
     if (messageObj.replyTo) {
-      console.log("🔄 Processing replyTo for API response:", {
-        message_id: messageObj._id,
-        replyTo_data: messageObj.replyTo,
-      });
-
       if (typeof messageObj.replyTo === "object" && messageObj.replyTo._id) {
         // Đã populate replyTo - tạo object đầy đủ
         processedReplyTo = {
@@ -512,4 +497,376 @@ exports.getUserRooms = catchAsync(async (req, res) => {
   res
     .status(200)
     .json({ status: "success", results: rooms.length, data: rooms });
+});
+
+/// 🆕 THÊM: Xóa tin nhắn direct (one-to-one) - HOÀN CHỈNH
+exports.deleteDirectMessage = catchAsync(async (req, res) => {
+  const { messageId } = req.body;
+
+  console.log("🗑️ deleteDirectMessage called:", { messageId });
+
+  // 🆕 VALIDATION: Kiểm tra messageId
+  if (!messageId) {
+    return res.status(400).json({
+      status: "fail",
+      message: "messageId is required in request body",
+    });
+  }
+
+  // 🆕 VALIDATION: Kiểm tra messageId format
+  if (!mongoose.Types.ObjectId.isValid(messageId)) {
+    return res.status(400).json({
+      status: "fail",
+      message: "Invalid message ID format",
+    });
+  }
+
+  // Lấy thông tin user từ token
+  const user = await getUserFromToken(req);
+  if (!user) {
+    return res.status(401).json({
+      status: "fail",
+      message: "User not found or unauthorized",
+    });
+  }
+
+  // Tìm tin nhắn và kiểm tra quyền
+  const message = await Message.findById(messageId)
+    .populate("sender", "keycloakId username")
+    .populate("room");
+
+  if (!message) {
+    return res.status(404).json({
+      status: "fail",
+      message: "Message not found",
+    });
+  }
+
+  // 🆕 BẢO MẬT: Kiểm tra user có phải là người gửi tin nhắn không
+  if (message.sender.keycloakId !== user.keycloakId) {
+    console.log("🚫 Unauthorized delete attempt - Direct Message:", {
+      attacker: user.keycloakId,
+      messageOwner: message.sender.keycloakId,
+      messageId: messageId,
+      timestamp: new Date(),
+    });
+
+    return res.status(403).json({
+      status: "fail",
+      message: "You can only delete your own messages",
+    });
+  }
+
+  // Kiểm tra room có tồn tại và là direct chat không
+  const room = await Room.findById(message.room._id);
+  if (!room) {
+    return res.status(404).json({
+      status: "fail",
+      message: "Conversation not found",
+    });
+  }
+
+  if (room.isGroup) {
+    return res.status(400).json({
+      status: "fail",
+      message: "This is a group conversation, use group delete endpoint",
+    });
+  }
+
+  // 🆕 BẢO MẬT: Kiểm tra user có trong conversation không
+  if (!room.members.includes(user.keycloakId)) {
+    console.log("🚫 User not in conversation:", {
+      user: user.keycloakId,
+      conversationMembers: room.members,
+    });
+
+    return res.status(403).json({
+      status: "fail",
+      message: "Access denied to this conversation",
+    });
+  }
+
+  // 🆕 BẢO MẬT: Kiểm tra thời gian xóa (chỉ cho phép xóa trong 1 giờ)
+  const messageAge = Date.now() - new Date(message.createdAt).getTime();
+  const oneHour = 60 * 60 * 1000;
+
+  if (messageAge > oneHour) {
+    return res.status(403).json({
+      status: "fail",
+      message: "You can only delete messages within 1 hour of sending",
+    });
+  }
+
+  // 🗑️ XÓA TIN NHẮN TỪ DATABASE
+  await Message.findByIdAndDelete(messageId);
+
+  console.log("✅ Direct message deleted from DB:", {
+    messageId,
+    deletedBy: user.keycloakId,
+    conversationId: room._id,
+  });
+
+  // 📡 EMIT SOCKET để thông báo cho cả 2 users trong conversation
+  if (req.io) {
+    const socketData = {
+      messageId: messageId,
+      conversationId: room._id,
+      deletedBy: user.keycloakId,
+      isGroup: false,
+      timestamp: new Date(),
+    };
+
+    req.io.to(room._id.toString()).emit("message_deleted", socketData);
+
+    console.log("📡 Socket emitted for direct message deletion:", socketData);
+  }
+
+  res.status(200).json({
+    status: "success",
+    message: "Message deleted successfully",
+    data: {
+      messageId,
+      conversationId: room._id,
+      deletedAt: new Date(),
+    },
+  });
+});
+
+// 🆕 THÊM: Xóa tin nhắn group - HOÀN CHỈNH
+exports.deleteGroupMessage = catchAsync(async (req, res) => {
+  const { messageId } = req.body;
+
+  console.log("🗑️ deleteGroupMessage called:", { messageId });
+
+  // 🆕 VALIDATION: Kiểm tra messageId
+  if (!messageId) {
+    return res.status(400).json({
+      status: "fail",
+      message: "messageId is required in request body",
+    });
+  }
+
+  // 🆕 VALIDATION: Kiểm tra messageId format
+  if (!mongoose.Types.ObjectId.isValid(messageId)) {
+    return res.status(400).json({
+      status: "fail",
+      message: "Invalid message ID format",
+    });
+  }
+
+  // Lấy thông tin user từ token
+  const user = await getUserFromToken(req);
+  if (!user) {
+    return res.status(401).json({
+      status: "fail",
+      message: "User not found or unauthorized",
+    });
+  }
+
+  // Tìm tin nhắn và kiểm tra quyền
+  const message = await Message.findById(messageId)
+    .populate("sender", "keycloakId username")
+    .populate("room");
+
+  if (!message) {
+    return res.status(404).json({
+      status: "fail",
+      message: "Message not found",
+    });
+  }
+
+  // 🆕 BẢO MẬT: Kiểm tra user có phải là người gửi tin nhắn không
+  if (message.sender.keycloakId !== user.keycloakId) {
+    console.log("🚫 Unauthorized delete attempt - Group Message:", {
+      attacker: user.keycloakId,
+      messageOwner: message.sender.keycloakId,
+      messageId: messageId,
+      timestamp: new Date(),
+    });
+
+    return res.status(403).json({
+      status: "fail",
+      message: "You can only delete your own messages",
+    });
+  }
+
+  // Kiểm tra room có tồn tại và là group chat không
+  const room = await Room.findById(message.room._id);
+  if (!room) {
+    return res.status(404).json({
+      status: "fail",
+      message: "Group room not found",
+    });
+  }
+
+  if (!room.isGroup) {
+    return res.status(400).json({
+      status: "fail",
+      message: "This is a direct conversation, use direct delete endpoint",
+    });
+  }
+
+  // 🆕 BẢO MẬT: Kiểm tra user có trong group không
+  if (!room.members.includes(user.keycloakId)) {
+    console.log("🚫 User not in group:", {
+      user: user.keycloakId,
+      groupMembers: room.members,
+    });
+
+    return res.status(403).json({
+      status: "fail",
+      message: "Access denied to this group",
+    });
+  }
+
+  // 🆕 BẢO MẬT: Kiểm tra thời gian xóa (chỉ cho phép xóa trong 1 giờ)
+  const messageAge = Date.now() - new Date(message.createdAt).getTime();
+  const oneHour = 60 * 60 * 1000;
+
+  if (messageAge > oneHour) {
+    return res.status(403).json({
+      status: "fail",
+      message: "You can only delete messages within 1 hour of sending",
+    });
+  }
+
+  // 🗑️ XÓA TIN NHẮN TỪ DATABASE
+  await Message.findByIdAndDelete(messageId);
+
+  console.log("✅ Group message deleted from DB:", {
+    messageId,
+    deletedBy: user.keycloakId,
+    roomId: room._id,
+    roomName: room.name,
+  });
+
+  // 📡 EMIT SOCKET để thông báo cho tất cả members trong group
+  if (req.io) {
+    const socketData = {
+      messageId: messageId,
+      roomId: room._id,
+      deletedBy: user.keycloakId,
+      isGroup: true,
+      timestamp: new Date(),
+    };
+
+    req.io.to(room._id.toString()).emit("message_deleted", socketData);
+
+    console.log("📡 Socket emitted for group message deletion:", socketData);
+  }
+
+  res.status(200).json({
+    status: "success",
+    message: "Message deleted successfully",
+    data: {
+      messageId,
+      roomId: room._id,
+      roomName: room.name,
+      deletedAt: new Date(),
+    },
+  });
+});
+
+// 🆕 THÊM: Unified delete message endpoint (có thể dùng cho cả direct và group)
+exports.deleteMessage = catchAsync(async (req, res) => {
+  const { messageId, isGroup = false } = req.body; // 🆕 THÊM: isGroup để xác định loại tin nhắn
+
+  console.log("🗑️ deleteMessage called:", { messageId, isGroup });
+
+  if (!messageId) {
+    return res.status(400).json({
+      status: "fail",
+      message: "messageId is required in request body",
+    });
+  }
+
+  // Lấy thông tin user từ token
+  const user = await getUserFromToken(req);
+  if (!user) {
+    return res.status(401).json({
+      status: "fail",
+      message: "User not found",
+    });
+  }
+
+  // Tìm tin nhắn và kiểm tra quyền
+  const message = await Message.findById(messageId)
+    .populate("sender", "keycloakId username")
+    .populate("room");
+
+  if (!message) {
+    return res.status(404).json({
+      status: "fail",
+      message: "Message not found",
+    });
+  }
+
+  // Kiểm tra user có phải là người gửi tin nhắn không
+  if (message.sender.keycloakId !== user.keycloakId) {
+    return res.status(403).json({
+      status: "fail",
+      message: "You can only delete your own messages",
+    });
+  }
+
+  // Kiểm tra room có tồn tại
+  const room = await Room.findById(message.room._id);
+  if (!room) {
+    return res.status(400).json({
+      status: "fail",
+      message: "Room not found",
+    });
+  }
+
+  // Kiểm tra loại room có khớp với isGroup không
+  if (room.isGroup !== isGroup) {
+    return res.status(400).json({
+      status: "fail",
+      message: "Room type mismatch",
+    });
+  }
+
+  // Kiểm tra user có trong room không
+  if (!room.members.includes(user.keycloakId)) {
+    return res.status(403).json({
+      status: "fail",
+      message: "Access denied to this conversation",
+    });
+  }
+
+  // 🗑️ XÓA TIN NHẮN TỪ DATABASE
+  await Message.findByIdAndDelete(messageId);
+
+  console.log("✅ Message deleted from DB:", { messageId, isGroup });
+
+  // 📡 EMIT SOCKET để thông báo real-time
+  if (req.io) {
+    const socketData = {
+      messageId: messageId,
+      deletedBy: user.keycloakId,
+      isGroup: isGroup,
+      timestamp: new Date(),
+    };
+
+    // Thêm room/conversation ID tùy theo loại
+    if (isGroup) {
+      socketData.roomId = room._id;
+    } else {
+      socketData.conversationId = room._id;
+    }
+
+    req.io.to(room._id.toString()).emit("message_deleted", socketData);
+
+    console.log("📡 Socket emitted for message deletion:", socketData);
+  }
+
+  res.status(200).json({
+    status: "success",
+    message: "Message deleted successfully",
+    data: {
+      messageId,
+      isGroup,
+      roomId: room._id,
+    },
+  });
 });

@@ -102,6 +102,25 @@ module.exports = (keycloak) => {
     userController.sendMessage
   );
 
+  // ====================== DELETE MESSAGE ======================
+
+  router.delete(
+    "/conversations/messages",
+    keycloak.protect(),
+    syncUser,
+    allowAllSenders,
+    userController.deleteDirectMessage
+  );
+
+  // ====================== DELETE MESSAGE DIRECT ======================
+  router.delete(
+    "/rooms/messages",
+    keycloak.protect(),
+    syncUser,
+    allowAllSenders,
+    userController.deleteGroupMessage
+  );
+
   // ====================== ROOM MANAGEMENT ======================
   router.get(
     "/rooms",
