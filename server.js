@@ -18,9 +18,10 @@ const DB = process.env.DATABASE.replace(
   process.env.DATABASE_PASSWORD
 );
 
-mongoose.connect(DB)
+mongoose
+  .connect(DB)
   .then(() => console.log("DB connection successful"))
-  .catch(err => console.error("DB connection error:", err));
+  .catch((err) => console.error("DB connection error:", err));
 
 // Khởi tạo Socket.IO
 const initSocket = require("./socket");

@@ -298,6 +298,203 @@ module.exports = (socket, io) => {
     }
   });
 
+  // Delete Group Message - THÊM PHẦN NÀY
+  socket.on(
+    "delete_group_message",
+    async ({ messageId, keycloakId, roomId }, callback) => {
+      try {
+        console.log("🗑️ delete_group_message socket called:", {
+          messageId,
+          keycloakId,
+          roomId,
+        });
+
+        // 🆕 VALIDATION
+        if (!messageId || !keycloakId || !roomId) {
+          return callback?.({
+            status: "fail",
+            message: "messageId, keycloakId and roomId are required",
+          });
+        }
+
+        // 🆕 VALIDATION: Kiểm tra messageId format (ObjectId)
+        if (!mongoose.Types.ObjectId.isValid(messageId)) {
+          return callback?.({
+            status: "fail",
+            message: "Invalid message ID format",
+          });
+        }
+
+        // 🆕 VALIDATION: Kiểm tra roomId format (ObjectId)
+        if (!mongoose.Types.ObjectId.isValid(roomId)) {
+          return callback?.({
+            status: "fail",
+            message: "Invalid room ID format",
+          });
+        }
+
+        // 🆕 TÌM USER THEO keycloakId
+        const user = await User.findOne({ keycloakId });
+        if (!user) {
+          return callback?.({
+            status: "fail",
+            message: "User not found",
+          });
+        }
+
+        // 🆕 TÌM TRONG Message model (group messages)
+        console.log("🔍 Searching for message in Message model (group)...");
+
+        const message = await Message.findById(messageId);
+
+        if (!message) {
+          console.log("❌ Message not found in Message model");
+          return callback?.({
+            status: "fail",
+            message: "Message not found",
+          });
+        }
+
+        console.log("✅ Found group message:", {
+          messageId: message._id,
+          senderId: message.sender.id,
+          keycloakId: keycloakId,
+          isOwner: message.sender.id === keycloakId,
+          roomId: message.room,
+          roomIdFromClient: roomId,
+        });
+
+        // 🆕 BẢO MẬT: Kiểm tra user có phải là người gửi tin nhắn không
+        if (message.sender.id !== keycloakId) {
+          console.log("🚫 Unauthorized delete attempt - Group Message:", {
+            attacker: keycloakId,
+            messageOwner: message.sender.id,
+            messageId: messageId,
+            timestamp: new Date(),
+          });
+
+          return callback?.({
+            status: "fail",
+            message: "You can only delete your own messages",
+          });
+        }
+
+        // 🆕 BẢO MẬT: Kiểm tra message có thuộc room này không
+        if (message.room.toString() !== roomId) {
+          console.log("🚫 Message does not belong to this room:", {
+            messageRoom: message.room.toString(),
+            requestedRoom: roomId,
+          });
+
+          return callback?.({
+            status: "fail",
+            message: "Message does not belong to this room",
+          });
+        }
+
+        // Kiểm tra room có tồn tại và là group chat không
+        const room = await Room.findById(roomId);
+        if (!room) {
+          return callback?.({
+            status: "fail",
+            message: "Group room not found",
+          });
+        }
+
+        if (!room.isGroup) {
+          return callback?.({
+            status: "fail",
+            message:
+              "This is a direct conversation, use direct delete endpoint",
+          });
+        }
+
+        // 🆕 BẢO MẬT: Kiểm tra user có trong group không
+        if (!room.members.includes(keycloakId)) {
+          console.log("🚫 User not in group:", {
+            user: keycloakId,
+            groupMembers: room.members,
+          });
+
+          return callback?.({
+            status: "fail",
+            message: "Access denied to this group",
+          });
+        }
+
+        // 🆕 BẢO MẬT: Kiểm tra thời gian xóa (chỉ cho phép xóa trong 1 giờ) - GIỮ NGUYÊN
+        const messageAge = Date.now() - new Date(message.createdAt).getTime();
+        const oneHour = 60 * 60 * 1000; // 1 giờ
+
+        console.log("⏰ Message age check:", {
+          messageCreatedAt: message.createdAt,
+          messageAgeInMinutes: (messageAge / (60 * 1000)).toFixed(2),
+          messageAgeInHours: (messageAge / (60 * 60 * 1000)).toFixed(2),
+          allowedAgeInHours: 1,
+        });
+
+        if (messageAge > oneHour) {
+          console.log("⏰ Message is too old to delete:", {
+            messageId,
+            messageAgeInHours: (messageAge / (60 * 60 * 1000)).toFixed(2),
+            allowedAgeInHours: 1,
+          });
+
+          return callback?.({
+            status: "fail",
+            message: "You can only delete messages within 1 hour of sending", // GIỮ NGUYÊN 1 GIỜ
+          });
+        }
+
+        // 🗑️ XÓA TIN NHẮN TỪ DATABASE
+        await Message.findByIdAndDelete(messageId);
+
+        console.log("✅ Group message deleted from DB:", {
+          messageId,
+          deletedBy: keycloakId,
+          roomId: room._id,
+          roomName: room.name,
+        });
+
+        // 📡 EMIT SOCKET để thông báo cho tất cả members trong group
+        const socketData = {
+          messageId: messageId,
+          roomId: room._id,
+          deletedBy: keycloakId,
+          isGroup: true,
+          timestamp: new Date(),
+        };
+
+        // SỬA LỖI: Dùng io.to() thay vì io.server.to()
+        io.to(roomId.toString()).emit("message_deleted", socketData);
+
+        console.log(
+          "📡 Socket emitted for group message deletion to room:",
+          roomId.toString(),
+          socketData
+        );
+
+        // Gửi kết quả thành công về client
+        callback?.({
+          status: "success",
+          message: "Message deleted successfully",
+          data: {
+            messageId,
+            roomId: room._id,
+            roomName: room.name,
+            deletedAt: new Date(),
+          },
+        });
+      } catch (err) {
+        console.error("❌ Error in delete_group_message:", err);
+        callback?.({
+          status: "error",
+          message: "Internal server error",
+        });
+      }
+    }
+  );
+
   // ---------------- Join Group Room ----------------
   socket.on("join_group_room", async ({ roomId }) => {
     try {

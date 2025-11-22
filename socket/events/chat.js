@@ -306,6 +306,173 @@ module.exports = (socket, io) => {
       });
     }
   });
+  // ---------------- Delete Direct Message ----------------
+  socket.on(
+    "delete_direct_message",
+    async ({ messageId, keycloakId }, callback) => {
+      try {
+        console.log("🗑️ delete_direct_message socket called:", {
+          messageId,
+          keycloakId,
+        });
+
+        // 🆕 VALIDATION
+        if (!messageId || !keycloakId) {
+          return callback?.({
+            status: "fail",
+            message: "messageId and keycloakId are required",
+          });
+        }
+
+        // 🆕 TÌM USER THEO keycloakId
+        const user = await User.findOne({ keycloakId });
+        if (!user) {
+          return callback?.({
+            status: "fail",
+            message: "User not found",
+          });
+        }
+
+        // 🆕 QUAN TRỌNG: TÌM TRONG OneToOneMessage (direct messages)
+        console.log("🔍 Searching for message in OneToOneMessage...");
+
+        // Tìm conversation có chứa message này
+        const conversation = await OneToOneMessage.findOne({
+          "messages._id": messageId,
+        });
+
+        if (!conversation) {
+          console.log("❌ Message not found in OneToOneMessage");
+          return callback?.({
+            status: "fail",
+            message: "Message not found",
+          });
+        }
+
+        // Tìm message cụ thể trong conversation
+        const message = conversation.messages.id(messageId);
+        if (!message) {
+          return callback?.({
+            status: "fail",
+            message: "Message not found in conversation",
+          });
+        }
+
+        console.log("✅ Found message:", {
+          messageId: message._id,
+          from: message.from,
+          keycloakId: keycloakId,
+          isOwner: message.from === keycloakId,
+        });
+
+        // 🆕 BẢO MẬT: Kiểm tra user có phải là người gửi tin nhắn không
+        if (message.from !== keycloakId) {
+          console.log("🚫 Unauthorized delete attempt - Direct Message:", {
+            attacker: keycloakId,
+            messageOwner: message.from,
+            messageId: messageId,
+            timestamp: new Date(),
+          });
+
+          return callback?.({
+            status: "fail",
+            message: "You can only delete your own messages",
+          });
+        }
+
+        // 🆕 BẢO MẬT: Kiểm tra user có trong conversation không
+        if (!conversation.participants.includes(keycloakId)) {
+          console.log("🚫 User not in conversation:", {
+            user: keycloakId,
+            participants: conversation.participants,
+          });
+
+          return callback?.({
+            status: "fail",
+            message: "Access denied to this conversation",
+          });
+        }
+
+        // 🗑️ XÓA TIN NHẮN TỪ OneToOneMessage
+        await OneToOneMessage.updateOne(
+          { _id: conversation._id },
+          { $pull: { messages: { _id: messageId } } }
+        );
+
+        console.log("✅ Direct message deleted from OneToOneMessage:", {
+          messageId,
+          deletedBy: keycloakId,
+          conversationId: conversation._id,
+        });
+
+        // 📡 TÌM SOCKET ID CỦA NGƯỜI CÒN LẠI TRONG CONVERSATION
+        const otherParticipant = conversation.participants.find(
+          (participant) => participant !== keycloakId
+        );
+
+        console.log(
+          "🔍 Finding socket for other participant:",
+          otherParticipant
+        );
+
+        // Tìm socket ID của người còn lại từ database
+        let otherParticipantSocketId = null;
+        const otherUser = await User.findOne({ keycloakId: otherParticipant });
+
+        if (otherUser && otherUser.socketId) {
+          otherParticipantSocketId = otherUser.socketId;
+          console.log(
+            `✅ Found socketId for ${otherParticipant}: ${otherParticipantSocketId}`
+          );
+        } else {
+          console.log(
+            `📭 Other participant ${otherParticipant} is offline or socketId not found`
+          );
+        }
+
+        // 📡 EMIT SOCKET đến cả 2 users
+        const socketData = {
+          messageId: messageId,
+          conversationId: conversation._id,
+          deletedBy: keycloakId,
+          isGroup: false,
+          timestamp: new Date(),
+        };
+
+        // 1. Gửi cho người xóa (current user)
+        socket.emit("message_deleted", socketData);
+
+        // 2. Gửi cho người còn lại (nếu online)
+        if (otherParticipantSocketId) {
+          io.to(otherParticipantSocketId).emit("message_deleted", socketData);
+          console.log(`📡 Emitted to other participant: ${otherParticipant}`);
+        }
+
+        console.log(
+          "📡 Socket emitted for direct message deletion:",
+          socketData
+        );
+
+        // Gửi kết quả thành công về client
+        callback?.({
+          status: "success",
+          message: "Message deleted successfully",
+          data: {
+            messageId,
+            conversationId: conversation._id,
+            deletedAt: new Date(),
+          },
+        });
+      } catch (err) {
+        console.error("❌ Error in delete_direct_message:", err);
+        callback?.({
+          status: "error",
+          message: "Internal server error",
+        });
+      }
+    }
+  );
+
   // ---------------- Typing Indicator ----------------
   socket.on("typing_start", ({ roomId }) => {
     if (roomId)
