@@ -503,3 +503,581 @@ exports.getUserRooms = catchAsync(async (req, res) => {
     .status(200)
     .json({ status: "success", results: rooms.length, data: rooms });
 });
+
+// 🆕 THÊM: Socket events cho pin/unpin messages - SỬA LẠI NHẬN DATA TỪ BODY
+// 🆕 SỬA: Hàm checkUserAccess hỗ trợ cả direct và group chat
+// 🆕 SỬA: Hàm checkUserAccess - NHẬN KEYCLOAKID TỪ PARAMETER
+const checkUserAccess = async (keycloakId, roomId) => {
+  try {
+    console.log("🔍 Checking user access:", { keycloakId, roomId });
+    if (!mongoose.Types.ObjectId.isValid(roomId)) {
+      console.log(`❌ Invalid roomId: ${roomId}`);
+      return false;
+    }
+
+    const room = await Room.findById(roomId);
+    if (!room) {
+      console.log(`❌ Room not found: ${roomId}`);
+      return false;
+    }
+
+    const user = await User.findOne({ keycloakId });
+    if (!user) {
+      console.log(`❌ User not found with keycloakId: ${keycloakId}`);
+      return false;
+    }
+
+    // 🆕 FIX: Chuẩn hóa so sánh
+    if (room.isGroup) {
+      // Group chat: members chứa keycloakId (string)
+      const hasAccess = room.members && room.members.includes(keycloakId);
+      console.log(`🔍 Group room access check: ${hasAccess}`, {
+        roomId,
+        keycloakId,
+        members: room.members,
+      });
+      return hasAccess;
+    } else {
+      // Direct chat: members chứa userId (ObjectId) - convert sang string để so sánh
+      const hasAccess =
+        room.members &&
+        room.members.some(
+          (member) => member.toString() === user._id.toString()
+        );
+      console.log(`🔍 Direct room access check: ${hasAccess}`, {
+        roomId,
+        userId: user._id,
+        members: room.members,
+      });
+      return hasAccess;
+    }
+  } catch (error) {
+    console.error("❌ Error in checkUserAccess:", error);
+    return false;
+  }
+};
+
+// 🆕 SỬA: Hàm handlePinMessage - PHÂN BIỆT DIRECT VÀ GROUP
+// 🆕 HOÀN THIỆN: Hàm handlePinMessage với real-time updates
+// 🆕 SỬA: handlePinMessage cho schema embedded sender
+exports.handlePinMessage = catchAsync(async (socket, data) => {
+  const { messageId, roomId } = data;
+  const keycloakId = socket.userId;
+
+  console.log("📌 Pin message request:", { messageId, roomId, keycloakId });
+
+  if (!messageId) {
+    return socket.emit("pin_message_response", {
+      status: "error",
+      message: "Message ID is required",
+    });
+  }
+
+  // 🆕 SỬA: Không cần populate vì sender là embedded object
+  const message = await Message.findById(messageId);
+
+  if (!message) {
+    return socket.emit("pin_message_response", {
+      status: "error",
+      message: "Message not found",
+    });
+  }
+
+  // 🆕 DEBUG: Kiểm tra thông tin sender trong message
+  console.log("🔍 Message sender debug:", {
+    messageId: message._id,
+    sender: message.sender,
+    hasSender: !!message.sender,
+    senderId: message.sender?.id,
+    senderName: message.sender?.name,
+  });
+
+  // Xác định roomId thực tế từ message
+  const actualRoomId = roomId || message.room.toString();
+
+  // Kiểm tra quyền
+  const hasAccess = await checkUserAccess(keycloakId, actualRoomId);
+  if (!hasAccess) {
+    return socket.emit("pin_message_response", {
+      status: "error",
+      message: "Access denied to this conversation",
+    });
+  }
+
+  // Kiểm tra số lượng tin nhắn được pin
+  const pinnedCount = await Message.countDocuments({
+    room: actualRoomId,
+    isPinned: true,
+  });
+
+  if (pinnedCount >= 5) {
+    return socket.emit("pin_message_response", {
+      status: "error",
+      message: "Maximum 5 pinned messages allowed",
+    });
+  }
+
+  // 🆕 SỬA: Cập nhật message - KHÔNG cần populate
+  const updatedMessage = await Message.findByIdAndUpdate(
+    messageId,
+    {
+      isPinned: true,
+      pinnedAt: new Date(),
+      pinnedBy: keycloakId,
+    },
+    {
+      new: true,
+      runValidators: false,
+    }
+  );
+
+  // 🆕 DEBUG: Kiểm tra message sau khi update
+  console.log("🔍 Updated message debug:", {
+    messageId: updatedMessage._id,
+    isPinned: updatedMessage.isPinned,
+    pinnedAt: updatedMessage.pinnedAt,
+    pinnedBy: updatedMessage.pinnedBy,
+    sender: updatedMessage.sender,
+  });
+
+  // Xác định chatType
+  const room = await Room.findById(actualRoomId);
+  const chatType = room && room.isGroup ? "group" : "individual";
+
+  // 🆕 SỬA: Lấy danh sách pinned messages - KHÔNG cần populate
+  const pinnedMessages = await Message.find({
+    room: actualRoomId,
+    isPinned: true,
+  })
+    .sort({ pinnedAt: -1 })
+    .lean();
+
+  // 🆕 DEBUG: Kiểm tra dữ liệu pinned messages
+  console.log("🔍 Pinned messages debug:", {
+    count: pinnedMessages.length,
+    messages: pinnedMessages.map((msg) => ({
+      id: msg._id,
+      sender: msg.sender,
+      senderId: msg.sender?.id,
+      senderName: msg.sender?.name,
+      content: msg.content,
+      pinnedAt: msg.pinnedAt,
+    })),
+  });
+
+  // Gửi event đến tất cả users trong room
+  socket.to(actualRoomId).emit("message_pinned", {
+    messageId: messageId,
+    chatType: chatType,
+    roomId: actualRoomId,
+    pinnedAt: updatedMessage.pinnedAt,
+    pinnedBy: keycloakId,
+    pinnedMessages: pinnedMessages, // 🆕 GỬI DANH SÁCH ĐẦY ĐỦ
+  });
+
+  // BROADCAST: Cập nhật danh sách pinned messages
+  socket.to(actualRoomId).emit("pinned_messages_updated", {
+    roomId: actualRoomId,
+    chatType: chatType,
+    pinnedMessages: pinnedMessages,
+    action: "pin",
+    messageId: messageId,
+  });
+
+  // Response cho user thực hiện
+  socket.emit("pin_message_response", {
+    status: "success",
+    message: "Message pinned successfully",
+    data: {
+      messageId: messageId,
+      chatType: chatType,
+      pinnedMessages: pinnedMessages,
+    },
+  });
+
+  console.log("✅ Message pinned:", {
+    messageId,
+    chatType,
+    roomId: actualRoomId,
+    pinnedMessagesCount: pinnedMessages.length,
+    senderName: message.sender?.name, // 🆕 THÊM sender name để debug
+  });
+});
+
+// 🆕 HOÀN THIỆN: Hàm handleUnpinMessage với real-time updates
+// 🆕 SỬA: handleUnpinMessage cho schema embedded sender
+exports.handleUnpinMessage = catchAsync(async (socket, data) => {
+  const { messageId, roomId } = data;
+  const keycloakId = socket.userId;
+
+  console.log("📌 Unpin message request:", { messageId, roomId, keycloakId });
+
+  if (!messageId) {
+    return socket.emit("unpin_message_response", {
+      status: "error",
+      message: "Message ID is required",
+    });
+  }
+
+  // Tìm message để kiểm tra
+  const message = await Message.findById(messageId);
+  if (!message) {
+    return socket.emit("unpin_message_response", {
+      status: "error",
+      message: "Message not found",
+    });
+  }
+
+  // 🆕 DEBUG: Kiểm tra sender trước khi unpin
+  console.log("🔍 Message to unpin debug:", {
+    messageId: message._id,
+    sender: message.sender,
+    isPinned: message.isPinned,
+  });
+
+  // Xác định roomId thực tế từ message
+  const actualRoomId = roomId || message.room.toString();
+
+  // Kiểm tra quyền
+  const hasAccess = await checkUserAccess(keycloakId, actualRoomId);
+  if (!hasAccess) {
+    return socket.emit("unpin_message_response", {
+      status: "error",
+      message: "Access denied to this conversation",
+    });
+  }
+
+  if (!message.isPinned) {
+    return socket.emit("unpin_message_response", {
+      status: "error",
+      message: "Message is not pinned",
+    });
+  }
+
+  // 🆕 SỬA: Cập nhật message
+  await Message.findByIdAndUpdate(
+    messageId,
+    {
+      isPinned: false,
+      pinnedAt: null,
+      pinnedBy: null,
+    },
+    {
+      new: true,
+      runValidators: false,
+    }
+  );
+
+  // 🆕 SỬA: Lấy danh sách pinned messages mới nhất
+  const pinnedMessages = await Message.find({
+    room: actualRoomId,
+    isPinned: true,
+  })
+    .sort({ pinnedAt: -1 })
+    .lean();
+
+  // Xác định chatType
+  const room = await Room.findById(actualRoomId);
+  const chatType = room && room.isGroup ? "group" : "individual";
+
+  // 🆕 CẢI THIỆN: Gửi event với đầy đủ thông tin
+  socket.to(actualRoomId).emit("message_unpinned", {
+    messageId: messageId,
+    chatType: chatType,
+    roomId: actualRoomId,
+    pinnedMessages: pinnedMessages,
+  });
+
+  // 🆕 BROADCAST: Cập nhật danh sách pinned messages cho tất cả clients
+  socket.to(actualRoomId).emit("pinned_messages_updated", {
+    roomId: actualRoomId,
+    chatType: chatType,
+    pinnedMessages: pinnedMessages,
+    action: "unpin",
+    messageId: messageId,
+  });
+
+  // Response cho user thực hiện
+  socket.emit("unpin_message_response", {
+    status: "success",
+    message: "Message unpinned successfully",
+    data: {
+      messageId: messageId,
+      chatType: chatType,
+      pinnedMessages: pinnedMessages,
+    },
+  });
+
+  console.log("✅ Message unpinned:", {
+    messageId,
+    chatType,
+    roomId: actualRoomId,
+    pinnedMessagesCount: pinnedMessages.length,
+    senderName: message.sender?.name, // 🆕 THÊM sender name để debug
+  });
+});
+
+// 🆕 HOÀN THIỆN: Hàm getPinnedMessages
+// 🆕 SỬA: getPinnedMessages cho schema embedded sender
+exports.getPinnedMessages = catchAsync(async (req, res) => {
+  const { roomId, keycloakId } = req.body;
+
+  if (!roomId || !keycloakId) {
+    return res.status(400).json({
+      status: "error",
+      message: "Room ID and User ID are required in request body",
+    });
+  }
+
+  console.log(
+    "📌 Fetching pinned messages for room:",
+    roomId,
+    "user:",
+    keycloakId
+  );
+
+  // Kiểm tra quyền truy cập
+  const hasAccess = await checkUserAccess(keycloakId, roomId);
+  if (!hasAccess) {
+    return res.status(403).json({
+      status: "error",
+      message: "Access denied to this conversation",
+    });
+  }
+
+  // 🆕 SỬA: Lấy pinned messages - KHÔNG cần populate
+  const pinnedMessages = await Message.find({
+    room: roomId,
+    isPinned: true,
+  })
+    .sort({ pinnedAt: -1 })
+    .lean();
+
+  // 🆕 DEBUG: Log để kiểm tra dữ liệu trả về
+  console.log("🔍 API Pinned messages debug:", {
+    count: pinnedMessages.length,
+    messages: pinnedMessages.map((msg) => ({
+      id: msg._id,
+      sender: msg.sender,
+      senderId: msg.sender?.id,
+      senderName: msg.sender?.name,
+      content: msg.content,
+      pinnedAt: msg.pinnedAt,
+    })),
+  });
+
+  console.log(
+    `✅ Found ${pinnedMessages.length} pinned messages for room ${roomId}`
+  );
+
+  res.status(200).json({
+    status: "success",
+    results: pinnedMessages.length,
+    data: pinnedMessages,
+  });
+});
+
+// 🆕 HOÀN THIỆN: Hàm pinMessage cho HTTP API
+// 🆕 SỬA: pinMessage cho HTTP API với schema embedded sender
+exports.pinMessage = catchAsync(async (req, res) => {
+  const { messageId, roomId, keycloakId } = req.body;
+
+  if (!messageId || !keycloakId) {
+    return res.status(400).json({
+      status: "error",
+      message: "Message ID and User ID are required",
+    });
+  }
+
+  // Tìm message để lấy roomId
+  const message = await Message.findById(messageId);
+  if (!message) {
+    return res.status(404).json({
+      status: "error",
+      message: "Message not found",
+    });
+  }
+
+  // 🆕 DEBUG: Kiểm tra sender trong message gốc
+  console.log("🔍 Original message sender:", {
+    sender: message.sender,
+    senderId: message.sender?.id,
+    senderName: message.sender?.name,
+  });
+
+  // Xác định roomId thực tế
+  const actualRoomId = roomId || message.room.toString();
+
+  // Kiểm tra quyền truy cập
+  const hasAccess = await checkUserAccess(keycloakId, actualRoomId);
+  if (!hasAccess) {
+    return res.status(403).json({
+      status: "error",
+      message: "Access denied to this conversation",
+    });
+  }
+
+  // Kiểm tra số lượng tin nhắn được pin
+  const pinnedCount = await Message.countDocuments({
+    room: actualRoomId,
+    isPinned: true,
+  });
+
+  if (pinnedCount >= 5) {
+    return res.status(400).json({
+      status: "error",
+      message: "Maximum 5 pinned messages allowed",
+    });
+  }
+
+  // 🆕 SỬA: Sử dụng findByIdAndUpdate thay vì save()
+  const updatedMessage = await Message.findByIdAndUpdate(
+    messageId,
+    {
+      isPinned: true,
+      pinnedAt: new Date(),
+      pinnedBy: keycloakId,
+    },
+    {
+      new: true,
+      runValidators: false,
+    }
+  );
+
+  // 🆕 SỬA: Lấy danh sách pinned messages mới nhất
+  const pinnedMessages = await Message.find({
+    room: actualRoomId,
+    isPinned: true,
+  })
+    .sort({ pinnedAt: -1 })
+    .lean();
+
+  // Xác định chatType
+  const room = await Room.findById(actualRoomId);
+  const chatType = room && room.isGroup ? "group" : "individual";
+
+  // Gửi socket event
+  if (req.app.get("io")) {
+    const io = req.app.get("io");
+
+    io.to(actualRoomId).emit("message_pinned", {
+      messageId: messageId,
+      chatType: chatType,
+      roomId: actualRoomId,
+      pinnedMessages: pinnedMessages,
+    });
+
+    io.to(actualRoomId).emit("pinned_messages_updated", {
+      roomId: actualRoomId,
+      chatType: chatType,
+      pinnedMessages: pinnedMessages,
+      action: "pin",
+      messageId: messageId,
+    });
+  }
+
+  res.status(200).json({
+    status: "success",
+    message: "Message pinned successfully",
+    data: {
+      message: updatedMessage,
+      pinnedMessages: pinnedMessages,
+    },
+  });
+});
+
+// 🆕 HOÀN THIỆN: Hàm unpinMessage cho HTTP API
+// 🆕 SỬA: unpinMessage cho HTTP API với schema embedded sender
+exports.unpinMessage = catchAsync(async (req, res) => {
+  const { messageId, roomId, keycloakId } = req.body;
+
+  if (!messageId || !keycloakId) {
+    return res.status(400).json({
+      status: "error",
+      message: "Message ID and User ID are required",
+    });
+  }
+
+  // Tìm message để lấy roomId
+  const message = await Message.findById(messageId);
+  if (!message) {
+    return res.status(404).json({
+      status: "error",
+      message: "Message not found",
+    });
+  }
+
+  // Xác định roomId thực tế
+  const actualRoomId = roomId || message.room.toString();
+
+  // Kiểm tra quyền truy cập
+  const hasAccess = await checkUserAccess(keycloakId, actualRoomId);
+  if (!hasAccess) {
+    return res.status(403).json({
+      status: "error",
+      message: "Access denied to this conversation",
+    });
+  }
+
+  if (!message.isPinned) {
+    return res.status(400).json({
+      status: "error",
+      message: "Message is not pinned",
+    });
+  }
+
+  // 🆕 SỬA: Sử dụng findByIdAndUpdate thay vì save()
+  const updatedMessage = await Message.findByIdAndUpdate(
+    messageId,
+    {
+      isPinned: false,
+      pinnedAt: null,
+      pinnedBy: null,
+    },
+    {
+      new: true,
+      runValidators: false,
+    }
+  );
+
+  // 🆕 SỬA: Lấy danh sách pinned messages mới nhất
+  const pinnedMessages = await Message.find({
+    room: actualRoomId,
+    isPinned: true,
+  })
+    .sort({ pinnedAt: -1 })
+    .lean();
+
+  // Xác định chatType
+  const room = await Room.findById(actualRoomId);
+  const chatType = room && room.isGroup ? "group" : "individual";
+
+  // Gửi socket event
+  if (req.app.get("io")) {
+    const io = req.app.get("io");
+
+    io.to(actualRoomId).emit("message_unpinned", {
+      messageId: messageId,
+      chatType: chatType,
+      roomId: actualRoomId,
+      pinnedMessages: pinnedMessages,
+    });
+
+    io.to(actualRoomId).emit("pinned_messages_updated", {
+      roomId: actualRoomId,
+      chatType: chatType,
+      pinnedMessages: pinnedMessages,
+      action: "unpin",
+      messageId: messageId,
+    });
+  }
+
+  res.status(200).json({
+    status: "success",
+    message: "Message unpinned successfully",
+    data: {
+      message: updatedMessage,
+      pinnedMessages: pinnedMessages,
+    },
+  });
+});

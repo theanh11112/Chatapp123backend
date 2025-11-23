@@ -30,7 +30,6 @@ const messageSchema = new mongoose.Schema(
       ref: "Message",
     },
     replyContent: {
-      // 🆕 THÊM: Lưu content của message được reply
       type: String,
     },
     replySender: {
@@ -45,6 +44,19 @@ const messageSchema = new mongoose.Schema(
         user: { type: String }, // keycloakId của user reaction
       },
     ],
+    // 🆕 THÊM CÁC TRƯỜNG CHO PINNED MESSAGES
+    isPinned: {
+      type: Boolean,
+      default: false,
+    },
+    pinnedAt: {
+      type: Date,
+      default: null,
+    },
+    pinnedBy: {
+      type: String, // keycloakId của user pin message
+      default: null,
+    },
   },
   { timestamps: true, collection: "message" }
 );

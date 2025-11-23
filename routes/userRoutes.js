@@ -93,6 +93,30 @@ module.exports = (keycloak) => {
     userController.getRoomMessages
   );
 
+  // ====================== PINNED MESSAGES ====================== 🆕 THÊM
+  router.post(
+    "/messages/pinned",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.getPinnedMessages
+  );
+
+  router.post(
+    "/messages/pin",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.pinMessage
+  );
+
+  router.post(
+    "/messages/unpin",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.unpinMessage
+  );
   // ====================== SEND MESSAGE ======================
   router.post(
     "/message",

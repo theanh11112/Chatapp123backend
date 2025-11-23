@@ -8,6 +8,10 @@ const chatEvents = require("./events/chat");
 const callEvents = require("./events/call");
 const groupChatEvents = require("./events/groupChat");
 const { syncUserFromToken } = require("../utils/auth");
+const {
+  handlePinMessage,
+  handleUnpinMessage,
+} = require("../controllers/userController"); // 🆕 THÊM import
 
 const initSocket = (server) => {
   const io = new Server(server, {
@@ -32,6 +36,7 @@ const initSocket = (server) => {
       });
 
       socket.user = user;
+      socket.userId = user.keycloakId; // 🆕 THÊM: Gán userId cho socket để dùng trong pin/unpin
       console.log(
         `✅ Authenticated: ${user.username} (socketId: ${socket.id})`
       );
@@ -55,6 +60,38 @@ const initSocket = (server) => {
     chatEvents(socket, io);
     callEvents(socket, io);
     groupChatEvents(socket, io);
+
+    // 🆕 THÊM: Pin/Unpin message events
+    socket.on("pin_direct_message", (data) => {
+      console.log("📌 Pin direct message event received:", data);
+      handlePinMessage(socket, data);
+    });
+
+    socket.on("pin_group_message", (data) => {
+      console.log("📌 Pin group message event received:", data);
+      handlePinMessage(socket, data);
+    });
+
+    socket.on("unpin_direct_message", (data) => {
+      console.log("📌 Unpin direct message event received:", data);
+      handleUnpinMessage(socket, data);
+    });
+
+    socket.on("unpin_group_message", (data) => {
+      console.log("📌 Unpin group message event received:", data);
+      handleUnpinMessage(socket, data);
+    });
+
+    // 🆕 THÊM: Các events cho HTTP endpoints (nếu cần)
+    socket.on("pin_message", (data) => {
+      console.log("📌 Pin message event received:", data);
+      handlePinMessage(socket, data);
+    });
+
+    socket.on("unpin_message", (data) => {
+      console.log("📌 Unpin message event received:", data);
+      handleUnpinMessage(socket, data);
+    });
 
     // Broadcast realtime cho tất cả bạn bè hoặc toàn bộ app - ĐÃ SỬA
     socket.broadcast.emit("user_online", {
