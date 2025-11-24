@@ -17,6 +17,122 @@ module.exports = (socket, io) => {
     currentUserId
   );
 
+  // ==================== START CONVERSATION ====================
+  socket.on("start_conversation", async (data, callback) => {
+    try {
+      const { to, from } = data;
+
+      console.log("💬 Starting conversation:", { to, from });
+
+      // VALIDATION
+      if (!to || !from) {
+        const errorMsg = "Missing required fields: to and from";
+        console.log("❌", errorMsg);
+        socket.emit("conversation_error", { message: errorMsg });
+        return callback?.({ success: false, error: errorMsg });
+      }
+
+      if (to === from) {
+        const errorMsg = "Cannot start conversation with yourself";
+        console.log("❌", errorMsg);
+        socket.emit("conversation_error", { message: errorMsg });
+        return callback?.({ success: false, error: errorMsg });
+      }
+
+      // KIỂM TRA USERS TỒN TẠI
+      const [user1, user2] = await Promise.all([
+        User.findOne({ keycloakId: from }),
+        User.findOne({ keycloakId: to }),
+      ]);
+
+      if (!user1 || !user2) {
+        const errorMsg = "One or both users not found";
+        console.log("❌", errorMsg);
+        socket.emit("conversation_error", { message: errorMsg });
+        return callback?.({ success: false, error: errorMsg });
+      }
+
+      // KIỂM TRA ĐÃ CÓ CONVERSATION CHƯA
+      let conversation = await OneToOneMessage.findOne({
+        participants: { $all: [from, to] },
+      });
+
+      if (!conversation) {
+        // TẠO CONVERSATION MỚI
+        conversation = await OneToOneMessage.create({
+          participants: [from, to],
+          messages: [],
+        });
+        console.log("✅ New conversation created:", conversation._id);
+      } else {
+        console.log("✅ Existing conversation found:", conversation._id);
+      }
+
+      // POPULATE THÔNG TIN USER CHO FRONTEND
+      const participantsInfo = await Promise.all(
+        conversation.participants.map(async (participantId) => {
+          const user = await User.findOne({ keycloakId: participantId }).select(
+            "keycloakId username fullName avatar status lastSeen email"
+          );
+          return user;
+        })
+      );
+
+      const conversationWithUserInfo = {
+        _id: conversation._id,
+        participants: participantsInfo,
+        messages: conversation.messages,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+      };
+
+      // TÌM SOCKET ID CỦA NGƯỜI NHẬN
+      const toUser = await User.findOne({ keycloakId: to });
+
+      // EMIT SỰ KIỆN CHO CẢ 2 USERS
+      const successData = {
+        conversation: conversationWithUserInfo,
+        message: "Conversation started successfully",
+      };
+
+      // Gửi cho người khởi tạo
+      socket.emit("conversation_started", successData);
+      console.log(`📤 Emitted conversation_started to sender: ${from}`);
+
+      // Gửi cho user kia (nếu online)
+      if (toUser?.socketId) {
+        io.to(toUser.socketId).emit("conversation_started", successData);
+        console.log(`📤 Emitted conversation_started to receiver: ${to}`);
+      } else {
+        console.log(`📭 Receiver ${to} is offline`);
+      }
+
+      // Lưu audit log
+      await AuditLog.create({
+        user: from,
+        action: "start_conversation",
+        targetId: to,
+        metadata: {
+          conversationId: conversation._id,
+          participants: [from, to],
+        },
+      });
+
+      console.log("✅ Conversation started successfully:", conversation._id);
+
+      // Callback success
+      callback?.({
+        success: true,
+        conversation: conversationWithUserInfo,
+        message: "Conversation started successfully",
+      });
+    } catch (error) {
+      console.error("❌ Error starting conversation:", error);
+      const errorMsg = "Failed to start conversation";
+      socket.emit("conversation_error", { message: errorMsg });
+      callback?.({ success: false, error: errorMsg });
+    }
+  });
   // ---------------- Get Direct Conversations ----------------
   socket.on("get_direct_conversations", async ({ keycloakId }, callback) => {
     try {

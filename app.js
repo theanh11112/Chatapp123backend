@@ -20,6 +20,7 @@ const moderatorRoutes = require("./routes/moderatorRoutes");
 const userRoutes = require("./routes/userRoutes");
 const guestRoutes = require("./routes/guestRoutes");
 const botRoutes = require("./routes/botRoutes");
+const callRoutes = require("./routes/callRoutes");
 
 // Khởi tạo Express app
 const app = express();
@@ -82,6 +83,7 @@ app.use("/moderator", moderatorRoutes(keycloak));
 app.use("/users", userRoutes(keycloak));
 app.use("/guest", guestRoutes(keycloak));
 app.use("/bot", botRoutes(keycloak));
+app.use("/call", callRoutes(keycloak));
 
 // ==================
 // 🧱 Kiểm tra API mặc định

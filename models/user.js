@@ -26,7 +26,11 @@ const userSchema = new mongoose.Schema(
 
     department: { type: mongoose.Schema.Types.ObjectId, ref: "Department" },
 
-    friends: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    friends: [
+      {
+        type: String, // Chỉ lưu keycloakId, không cần ref
+      },
+    ],
 
     roles: {
       type: [String],

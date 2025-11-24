@@ -36,6 +36,9 @@ module.exports = (keycloak) => {
   const allowUsers = requireRole(...["user", "admin", "moderator"]);
   const allowAllSenders = requireRole(...["user", "admin", "moderator", "bot"]);
 
+  // 🆕 THÊM: Chỉ cho phép admin và moderator
+  const allowAdminAndModerator = requireRole(...["admin", "moderator"]);
+
   // ====================== PROFILE ======================
   router.get(
     "/me",
@@ -50,6 +53,89 @@ module.exports = (keycloak) => {
     syncUser,
     allowUsers,
     userController.updateProfile
+  );
+
+  // ====================== USER MANAGEMENT ======================
+  router.get(
+    "/get-users",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.getAllUsers
+  );
+
+  router.get(
+    "/search",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.searchUsers
+  );
+
+  // ====================== FRIEND MANAGEMENT ====================== 🆕 THÊM
+  router.post(
+    "/get-friends",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.getFriends
+  );
+
+  router.post(
+    "/get-nonfriends",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.getNonFriendUsers
+  );
+
+  router.post(
+    "/get-requests",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.getFriendRequests
+  );
+
+  router.post(
+    "/send-friend-request",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.sendFriendRequest
+  );
+
+  // routes/user.js
+  router.post(
+    "/cancel-friend-request",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.cancelFriendRequest
+  );
+  router.post(
+    "/respond-friend-request",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.respondToFriendRequest
+  );
+  router.post(
+    "/cancel-friend-request",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.cancelFriendRequest
+  );
+
+  // ====================== GROUP MANAGEMENT ======================
+  // 🎯 CHỈ ADMIN/MODERATOR MỚI ĐƯỢC TẠO GROUP
+  router.post(
+    "/group/create",
+    keycloak.protect(),
+    syncUser,
+    allowAdminAndModerator,
+    userController.createGroup
   );
 
   // ====================== DIRECT CONVERSATIONS ======================
@@ -69,7 +155,7 @@ module.exports = (keycloak) => {
   );
 
   // ====================== GROUP ROOMS ======================
-  router.get(
+  router.post(
     "/rooms/group",
     keycloak.protect(),
     syncUser,
@@ -77,11 +163,11 @@ module.exports = (keycloak) => {
     userController.getGroupRooms
   );
   router.post(
-    "/rooms/group",
+    "/creats/group",
     keycloak.protect(),
     syncUser,
     allowUsers,
-    userController.getGroupRooms
+    userController.createGroup
   );
 
   // ====================== ROOM MESSAGES ======================
@@ -93,7 +179,7 @@ module.exports = (keycloak) => {
     userController.getRoomMessages
   );
 
-  // ====================== PINNED MESSAGES ====================== 🆕 THÊM
+  // ====================== PINNED MESSAGES ======================
   router.post(
     "/messages/pinned",
     keycloak.protect(),
@@ -117,6 +203,7 @@ module.exports = (keycloak) => {
     allowUsers,
     userController.unpinMessage
   );
+
   // ====================== SEND MESSAGE ======================
   router.post(
     "/message",
@@ -143,7 +230,7 @@ module.exports = (keycloak) => {
     userController.createPrivateRoom
   );
 
-  // ====================== FRIEND LIST ======================
+  // ====================== FRIEND LIST ====================== 🆕 DI CHUYỂN XUỐNG
   router.get(
     "/friends",
     keycloak.protect(),

@@ -4,6 +4,7 @@ const adminRoutes = require("./adminRoutes");
 const moderatorRoutes = require("./moderatorRoutes");
 const botRoutes = require("./botRoutes");
 const guestRoutes = require("./guestRoutes");
+const callRoutes = require("./callRoutes");
 
 module.exports = (keycloak) => {
   const router = express.Router();
@@ -13,6 +14,7 @@ module.exports = (keycloak) => {
   router.use("/moderator", moderatorRoutes(keycloak));
   router.use("/bot", botRoutes(keycloak));
   router.use("/guest", guestRoutes(keycloak));
+  router.use("/call", callRoutes(keycloak));
 
   router.get("/", (req, res) => {
     res.json({ message: "✅ API Server is running with Keycloak" });

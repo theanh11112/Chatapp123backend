@@ -6,6 +6,7 @@ const OneToOneMessage = require("../models/OneToOneMessage");
 const Call = require("../models/call");
 const catchAsync = require("../utils/catchAsync");
 const filterObj = require("../utils/filterObj");
+const FriendRequest = require("../models/friendRequest");
 const mongoose = require("mongoose");
 
 exports.setSocketIo = (socketIoInstance) => {
@@ -14,7 +15,175 @@ exports.setSocketIo = (socketIoInstance) => {
 
 /*
 |--------------------------------------------------------------------------
-| USER PROFILE
+| USER MANAGEMENT - 🆕 THÊM MỚI
+|--------------------------------------------------------------------------
+*/
+
+// 🆕 THÊM: Lấy danh sách tất cả users (cho tạo group)
+// GET /users/get-users
+exports.getAllUsers = catchAsync(async (req, res) => {
+  try {
+    console.log("🔍 Fetching all users...");
+
+    // Lấy danh sách tất cả users, loại trừ user hiện tại nếu có
+    const currentUserId = req.user?.keycloakId;
+    const query = currentUserId ? { keycloakId: { $ne: currentUserId } } : {};
+
+    const users = await User.find(query)
+      .select(
+        "keycloakId username firstName lastName email avatar status lastSeen"
+      )
+      .sort({ firstName: 1, lastName: 1 });
+
+    res.status(200).json({
+      status: "success",
+      results: users.length,
+      data: users,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching users:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to fetch users",
+    });
+  }
+});
+
+// 🆕 THÊM: Tạo group mới
+// POST /users/group/create
+exports.createGroup = catchAsync(async (req, res) => {
+  try {
+    const { name, members, topic } = req.body;
+    const createdBy = req.user?.keycloakId;
+
+    console.log("📦 Creating new group:", { name, members, createdBy });
+
+    // VALIDATION
+    if (!name || !members || !Array.isArray(members)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Group name and members array are required",
+      });
+    }
+
+    if (members.length < 2) {
+      return res.status(400).json({
+        status: "error",
+        message: "Group must have at least 2 members",
+      });
+    }
+
+    // THÊM createdBy vào members nếu chưa có
+    const allMembers = [...new Set([...members, createdBy])];
+
+    // KIỂM TRA USERS TỒN TẠI
+    const existingUsers = await User.find({
+      keycloakId: { $in: allMembers },
+    }).select("keycloakId");
+
+    const existingUserIds = existingUsers.map((user) => user.keycloakId);
+    const nonExistingUsers = allMembers.filter(
+      (member) => !existingUserIds.includes(member)
+    );
+
+    if (nonExistingUsers.length > 0) {
+      return res.status(400).json({
+        status: "error",
+        message: `Some users not found: ${nonExistingUsers.join(", ")}`,
+      });
+    }
+
+    // TẠO GROUP MỚI
+    const newGroup = await Room.create({
+      name: name.trim(),
+      isGroup: true,
+      members: allMembers, // Lưu keycloakIds
+      createdBy: createdBy,
+      topic: topic || null,
+    });
+
+    console.log("✅ Group created successfully:", newGroup._id);
+
+    // POPULATE THÔNG TIN ĐẦY ĐỦ ĐỂ TRẢ VỀ
+    const populatedGroup = await Room.findById(newGroup._id)
+      .populate({
+        path: "members",
+        select: "keycloakId username firstName lastName avatar status",
+        match: { keycloakId: { $in: allMembers } },
+      })
+      .populate({
+        path: "createdBy",
+        select: "keycloakId username firstName lastName avatar",
+        match: { keycloakId: createdBy },
+      });
+
+    res.status(201).json({
+      status: "success",
+      message: "Group created successfully",
+      data: populatedGroup,
+    });
+  } catch (error) {
+    console.error("❌ Error creating group:", error);
+
+    // XỬ LÝ LỖI DUPLICATE
+    if (error.code === 11000) {
+      return res.status(400).json({
+        status: "error",
+        message: "Group name already exists",
+      });
+    }
+
+    res.status(500).json({
+      status: "error",
+      message: "Failed to create group",
+    });
+  }
+});
+
+// 🆕 THÊM: Tìm kiếm users
+// GET /users/search?q=keyword
+exports.searchUsers = catchAsync(async (req, res) => {
+  try {
+    const { q } = req.query;
+
+    if (!q || q.length < 2) {
+      return res.status(400).json({
+        status: "error",
+        message: "Search query must be at least 2 characters",
+      });
+    }
+
+    console.log("🔍 Searching users:", q);
+
+    const users = await User.find({
+      $or: [
+        { firstName: { $regex: q, $options: "i" } },
+        { lastName: { $regex: q, $options: "i" } },
+        { username: { $regex: q, $options: "i" } },
+        { email: { $regex: q, $options: "i" } },
+      ],
+    })
+      .select("keycloakId username firstName lastName email avatar status")
+      .limit(20)
+      .sort({ firstName: 1 });
+
+    res.status(200).json({
+      status: "success",
+      results: users.length,
+      data: users,
+    });
+  } catch (error) {
+    console.error("❌ Error searching users:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to search users",
+    });
+  }
+});
+
+/*
+|--------------------------------------------------------------------------
+| USER PROFILE - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
@@ -62,7 +231,7 @@ exports.updateProfile = exports.updateMe;
 
 /*
 |--------------------------------------------------------------------------
-| ROOM HELPERS
+| ROOM HELPERS - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
@@ -74,7 +243,7 @@ const getUserFromToken = async (req) => {
 
 /*
 |--------------------------------------------------------------------------
-| DIRECT CHAT
+| DIRECT CHAT - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
@@ -129,7 +298,7 @@ exports.getDirectConversations = catchAsync(async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| GROUP CHAT
+| GROUP CHAT - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
@@ -143,18 +312,16 @@ exports.getGroupRooms = catchAsync(async (req, res) => {
     return res.status(400).json({ message: "keycloakId is required" });
   }
 
-  // 🆕 SỬA: Tìm rooms có chứa keycloakId trong mảng members
+  // Tìm rooms có chứa keycloakId trong mảng members
   const rooms = await Room.find({
     isGroup: true,
-    members: keycloakId, // 🆕 Tìm rooms có member là keycloakId này
+    members: keycloakId,
   })
     .populate("lastMessage")
     .populate("pinnedMessages")
     .sort({ updatedAt: -1 });
 
-  console.log(`✅ Found ${rooms.length} group rooms for user ${keycloakId}`);
-
-  // 🆕 THÊM: Lấy thông tin chi tiết của members và createdBy
+  // Lấy thông tin chi tiết của members và createdBy
   const roomsWithUserDetails = await Promise.all(
     rooms.map(async (room) => {
       // Lấy thông tin chi tiết của tất cả members
@@ -191,31 +358,9 @@ exports.getGroupRooms = catchAsync(async (req, res) => {
   });
 });
 
-// POST /users/group/get-all
-// exports.getGroupRooms = catchAsync(async (req, res) => {
-//   const user = await getUserFromToken(req);
-//   if (!user) return res.status(404).json({ message: "User not found" });
-
-//   const rooms = await Room.find({ isGroup: true, members: user._id })
-//     .populate(
-//       "members",
-//       "keycloakId username firstName lastName avatar status lastSeen"
-//     )
-//     .populate("createdBy", "keycloakId username avatar")
-//     .populate({
-//       path: "lastMessage",
-//       populate: { path: "sender", select: "keycloakId username avatar" },
-//     })
-//     .sort({ updatedAt: -1 });
-
-//   res
-//     .status(200)
-//     .json({ status: "success", results: rooms.length, data: rooms });
-// });
-
 /*
 |--------------------------------------------------------------------------
-| ROOM MESSAGES
+| ROOM MESSAGES - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
@@ -237,7 +382,7 @@ exports.getRoomMessages = catchAsync(async (req, res) => {
 
   const skip = (page - 1) * limit;
 
-  // 🆕 SỬA QUAN TRỌNG: Populate replyTo với thông tin đầy đủ
+  // Populate replyTo với thông tin đầy đủ
   let messages = await Message.find({ room: roomObjectId })
     .populate("sender", "keycloakId username firstName lastName avatar")
     .populate({
@@ -254,15 +399,13 @@ exports.getRoomMessages = catchAsync(async (req, res) => {
 
   console.log("🔍 Messages found:", messages.length);
 
-  // 🆕 THÊM: Log để debug replyTo
-
   messages = messages.reverse();
 
-  // 🆕 SỬA: Transform messages để có structure giống socket
+  // Transform messages để có structure giống socket
   const transformedMessages = messages.map((msg) => {
     const messageObj = msg.toObject ? msg.toObject() : { ...msg };
 
-    // 🆕 XỬ LÝ REPLYTO - TẠO OBJECT ĐẦY ĐỦ
+    // XỬ LÝ REPLYTO - TẠO OBJECT ĐẦY ĐỦ
     let processedReplyTo = null;
     if (messageObj.replyTo) {
       if (typeof messageObj.replyTo === "object" && messageObj.replyTo._id) {
@@ -294,7 +437,7 @@ exports.getRoomMessages = catchAsync(async (req, res) => {
       }
     }
 
-    // 🆕 TẠO MESSAGE STRUCTURE ĐỒNG NHẤT VỚI SOCKET
+    // TẠO MESSAGE STRUCTURE ĐỒNG NHẤT VỚI SOCKET
     return {
       _id: messageObj._id,
       id: messageObj._id.toString(),
@@ -311,7 +454,7 @@ exports.getRoomMessages = catchAsync(async (req, res) => {
         keycloakId: "unknown",
         username: "Unknown",
       },
-      // 🆕 THÊM REPLYTO ĐÃ XỬ LÝ
+      // THÊM REPLYTO ĐÃ XỬ LÝ
       replyTo: processedReplyTo,
       replyContent: messageObj.replyContent,
       replySender: messageObj.replySender,
@@ -332,7 +475,7 @@ exports.getRoomMessages = catchAsync(async (req, res) => {
   });
 });
 
-// 🆕 THÊM: Hàm format message time
+// Hàm format message time
 const formatMessageTime = (timestamp) => {
   if (!timestamp) return "";
   try {
@@ -349,7 +492,7 @@ const formatMessageTime = (timestamp) => {
 
 /*
 |--------------------------------------------------------------------------
-| CREATE ROOM
+| CREATE ROOM - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
@@ -372,11 +515,101 @@ exports.createRoom = catchAsync(async (req, res) => {
   res.status(201).json({ status: "success", data: newRoom });
 });
 
+// POST users/room/creatGroup
+exports.createGroup = catchAsync(async (req, res) => {
+  try {
+    const { name, members, topic } = req.body;
+    const createdBy = req.user?.keycloakId;
+
+    console.log("📦 Creating new group:", { name, members, createdBy });
+
+    // VALIDATION
+    if (!name || !members || !Array.isArray(members)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Group name and members array are required",
+      });
+    }
+
+    if (members.length < 2) {
+      return res.status(400).json({
+        status: "error",
+        message: "Group must have at least 2 members",
+      });
+    }
+
+    // THÊM createdBy vào members nếu chưa có
+    const allMembers = [...new Set([...members, createdBy])];
+
+    // KIỂM TRA USERS TỒN TẠI
+    const existingUsers = await User.find({
+      keycloakId: { $in: allMembers },
+    }).select("keycloakId");
+
+    const existingUserIds = existingUsers.map((user) => user.keycloakId);
+    const nonExistingUsers = allMembers.filter(
+      (member) => !existingUserIds.includes(member)
+    );
+
+    if (nonExistingUsers.length > 0) {
+      return res.status(400).json({
+        status: "error",
+        message: `Some users not found: ${nonExistingUsers.join(", ")}`,
+      });
+    }
+
+    // TẠO GROUP MỚI
+    const newGroup = await Room.create({
+      name: name.trim(),
+      isGroup: true,
+      members: allMembers, // Lưu keycloakIds
+      createdBy: createdBy,
+      topic: topic || null,
+    });
+
+    console.log("✅ Group created successfully:", newGroup._id);
+
+    // POPULATE THÔNG TIN ĐẦY ĐỦ ĐỂ TRẢ VỀ
+    const populatedGroup = await Room.findById(newGroup._id)
+      .populate({
+        path: "members",
+        select: "keycloakId username firstName lastName avatar status",
+        match: { keycloakId: { $in: allMembers } },
+      })
+      .populate({
+        path: "createdBy",
+        select: "keycloakId username firstName lastName avatar",
+        match: { keycloakId: createdBy },
+      });
+
+    res.status(201).json({
+      status: "success",
+      message: "Group created successfully",
+      data: populatedGroup,
+    });
+  } catch (error) {
+    console.error("❌ Error creating group:", error);
+
+    // XỬ LÝ LỖI DUPLICATE
+    if (error.code === 11000) {
+      return res.status(400).json({
+        status: "error",
+        message: "Group name already exists",
+      });
+    }
+
+    res.status(500).json({
+      status: "error",
+      message: "Failed to create group",
+    });
+  }
+});
+
 exports.createPrivateRoom = exports.createRoom;
 
 /*
 |--------------------------------------------------------------------------
-| SEND MESSAGE
+| SEND MESSAGE - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
@@ -425,22 +658,528 @@ exports.sendMessage = catchAsync(async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| FRIENDS
+| FRIENDS - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
-exports.getFriends = catchAsync(async (req, res) => {
-  const user = await User.findById(req.user._id).populate(
-    "friends",
-    "firstName lastName username email avatar"
-  );
+// 🆕 THÊM: Lấy danh sách bạn bè của user
 
-  res.status(200).json({ status: "success", data: user.friends });
+exports.getFriends = catchAsync(async (req, res) => {
+  try {
+    const { keycloakId } = req.body;
+
+    console.log("🔍 Fetching friends for user:", keycloakId);
+
+    if (!keycloakId) {
+      return res.status(400).json({
+        status: "error",
+        message: "keycloakId is required in request body",
+      });
+    }
+
+    // TÌM USER DỰA TRÊN KEYCLOAKID
+    const user = await User.findOne({ keycloakId });
+
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    console.log(`🔍 User friends array:`, user.friends);
+
+    // LẤY THÔNG TIN CHI TIẾT CỦA BẠN BÈ
+    let friendsDetails = [];
+
+    if (user.friends && user.friends.length > 0) {
+      friendsDetails = await User.find({
+        keycloakId: { $in: user.friends },
+      }).select("keycloakId username fullName email avatar status lastSeen");
+
+      console.log(`🔍 Found friends details:`, friendsDetails);
+    }
+
+    console.log(
+      `✅ Found ${friendsDetails.length} friends for user: ${keycloakId}`
+    );
+
+    res.status(200).json({
+      status: "success",
+      results: friendsDetails.length,
+      data: friendsDetails,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching friends:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to fetch friends",
+    });
+  }
+});
+
+exports.getNonFriendUsers = catchAsync(async (req, res) => {
+  try {
+    console.log("🔍 Fetching non-friend users...");
+
+    const currentUserId = req.user?.keycloakId;
+
+    if (!currentUserId) {
+      return res.status(401).json({
+        status: "error",
+        message: "User not authenticated",
+      });
+    }
+
+    const currentUser = await User.findOne({ keycloakId: currentUserId });
+    if (!currentUser) {
+      return res.status(404).json({
+        status: "error",
+        message: "Current user not found",
+      });
+    }
+
+    console.log("🔍 Current user friends:", currentUser.friends);
+
+    // Tìm tất cả friend requests liên quan đến user hiện tại
+    const pendingRequests = await FriendRequest.find({
+      $or: [
+        { sender: currentUserId, status: "Pending" },
+        { recipient: currentUserId, status: "Pending" },
+      ],
+    });
+
+    // Tạo Set của các keycloakId cần loại trừ
+    const excludedKeys = new Set();
+    excludedKeys.add(currentUserId); // Loại trừ chính mình
+
+    // Thêm bạn bè
+    currentUser.friends.forEach((friendKey) => {
+      excludedKeys.add(friendKey);
+    });
+
+    // Thêm users có pending requests
+    pendingRequests.forEach((request) => {
+      if (request.sender !== currentUserId) {
+        excludedKeys.add(request.sender);
+      }
+      if (request.recipient !== currentUserId) {
+        excludedKeys.add(request.recipient);
+      }
+    });
+
+    console.log("🚫 Excluded users:", Array.from(excludedKeys));
+
+    // Tìm users không bị loại trừ
+    const users = await User.find({
+      keycloakId: { $nin: Array.from(excludedKeys) },
+    })
+      .select(
+        "keycloakId username firstName lastName email avatar status lastSeen"
+      )
+      .sort({ firstName: 1, lastName: 1 });
+
+    console.log(`✅ Found ${users.length} non-friend users`);
+
+    res.status(200).json({
+      status: "success",
+      results: users.length,
+      data: users,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching non-friend users:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to fetch non-friend users",
+    });
+  }
+});
+
+exports.getFriendRequests = catchAsync(async (req, res) => {
+  try {
+    const { keycloakId } = req.body;
+
+    console.log("🔍 Fetching friend requests for user:", keycloakId);
+
+    // VALIDATION
+    if (!keycloakId) {
+      return res.status(400).json({
+        status: "error",
+        message: "keycloakId is required in request body",
+      });
+    }
+
+    // TÌM USER DỰA TRÊN KEYCLOAKID
+    const user = await User.findOne({ keycloakId });
+
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    // LẤY DANH SÁCH FRIEND REQUESTS - cả gửi và nhận
+    const friendRequests = await FriendRequest.find({
+      $or: [
+        { recipient: keycloakId, status: "Pending" }, // Requests nhận được
+        { sender: keycloakId, status: "Pending" }, // Requests đã gửi
+      ],
+    }).sort({ createdAt: -1 });
+
+    console.log(`🔍 Found ${friendRequests.length} raw friend requests`);
+
+    // Lấy thông tin chi tiết của sender và recipient
+    const formattedRequests = await Promise.all(
+      friendRequests.map(async (request) => {
+        const [senderInfo, recipientInfo] = await Promise.all([
+          User.findOne({ keycloakId: request.sender }).select(
+            "keycloakId username fullName email avatar status"
+          ),
+          User.findOne({ keycloakId: request.recipient }).select(
+            "keycloakId username fullName email avatar status"
+          ),
+        ]);
+
+        return {
+          _id: request._id,
+          sender: senderInfo,
+          recipient: recipientInfo,
+          status: request.status,
+          createdAt: request.createdAt,
+          respondedAt: request.respondedAt,
+          // Thêm trường để phân biệt loại request
+          requestType: request.sender === keycloakId ? "sent" : "received",
+        };
+      })
+    );
+
+    console.log(
+      `✅ Found ${formattedRequests.length} friend requests for user: ${keycloakId}`
+    );
+
+    res.status(200).json({
+      status: "success",
+      results: formattedRequests.length,
+      data: formattedRequests,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching friend requests:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to fetch friend requests",
+    });
+  }
+});
+
+exports.sendFriendRequest = catchAsync(async (req, res) => {
+  try {
+    const { senderKeycloakId, recipientKeycloakId } = req.body;
+
+    console.log("📨 Sending friend request:", {
+      senderKeycloakId,
+      recipientKeycloakId,
+    });
+
+    // VALIDATION
+    if (!senderKeycloakId || !recipientKeycloakId) {
+      return res.status(400).json({
+        status: "error",
+        message: "senderKeycloakId and recipientKeycloakId are required",
+      });
+    }
+
+    if (senderKeycloakId === recipientKeycloakId) {
+      return res.status(400).json({
+        status: "error",
+        message: "Cannot send friend request to yourself",
+      });
+    }
+
+    // TÌM USERS
+    const [sender, recipient] = await Promise.all([
+      User.findOne({ keycloakId: senderKeycloakId }),
+      User.findOne({ keycloakId: recipientKeycloakId }),
+    ]);
+
+    if (!sender || !recipient) {
+      return res.status(404).json({
+        status: "error",
+        message: "Sender or recipient not found",
+      });
+    }
+
+    // KIỂM TRA ĐÃ LÀ BẠN CHƯA
+    if (sender.friends.includes(recipient.keycloakId)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Already friends with this user",
+      });
+    }
+
+    // KIỂM TRA ĐÃ GỬI REQUEST CHƯA
+    const existingRequest = await FriendRequest.findOne({
+      $or: [
+        {
+          sender: senderKeycloakId,
+          recipient: recipientKeycloakId,
+          status: "Pending",
+        },
+        {
+          sender: recipientKeycloakId,
+          recipient: senderKeycloakId,
+          status: "Pending",
+        },
+      ],
+    });
+
+    if (existingRequest) {
+      return res.status(400).json({
+        status: "error",
+        message: "Friend request already exists",
+      });
+    }
+
+    // TẠO FRIEND REQUEST
+    const friendRequest = await FriendRequest.create({
+      sender: senderKeycloakId,
+      recipient: recipientKeycloakId,
+      status: "Pending",
+    });
+
+    // LẤY THÔNG TIN ĐẦY ĐỦ ĐỂ TRẢ VỀ
+    const [senderInfo, recipientInfo] = await Promise.all([
+      User.findOne({ keycloakId: senderKeycloakId }).select(
+        "keycloakId username fullName avatar"
+      ),
+      User.findOne({ keycloakId: recipientKeycloakId }).select(
+        "keycloakId username fullName avatar"
+      ),
+    ]);
+
+    const populatedRequest = {
+      _id: friendRequest._id,
+      sender: senderInfo,
+      recipient: recipientInfo,
+      status: friendRequest.status,
+      createdAt: friendRequest.createdAt,
+      respondedAt: friendRequest.respondedAt,
+    };
+
+    console.log("✅ Friend request sent successfully:", friendRequest._id);
+
+    res.status(201).json({
+      status: "success",
+      message: "Friend request sent successfully",
+      data: populatedRequest,
+    });
+  } catch (error) {
+    console.error("❌ Error sending friend request:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to send friend request",
+    });
+  }
+});
+
+exports.cancelFriendRequest = catchAsync(async (req, res) => {
+  try {
+    const { senderKeycloakId, recipientKeycloakId } = req.body;
+
+    console.log("🗑️ Canceling friend request:", {
+      senderKeycloakId,
+      recipientKeycloakId,
+    });
+
+    // VALIDATION
+    if (!senderKeycloakId || !recipientKeycloakId) {
+      return res.status(400).json({
+        status: "error",
+        message: "senderKeycloakId and recipientKeycloakId are required",
+      });
+    }
+
+    // TÌM VÀ XÓA FRIEND REQUEST
+    const friendRequest = await FriendRequest.findOneAndDelete({
+      sender: senderKeycloakId,
+      recipient: recipientKeycloakId,
+      status: "Pending",
+    });
+
+    if (!friendRequest) {
+      return res.status(404).json({
+        status: "error",
+        message: "Friend request not found or already processed",
+      });
+    }
+
+    console.log("✅ Friend request canceled successfully");
+
+    res.status(200).json({
+      status: "success",
+      message: "Friend request canceled successfully",
+    });
+  } catch (error) {
+    console.error("❌ Error canceling friend request:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to cancel friend request",
+    });
+  }
+});
+
+exports.respondToFriendRequest = catchAsync(async (req, res) => {
+  try {
+    const { requestId, keycloakId, action } = req.body; // action: 'accept' or 'reject'
+
+    console.log("📨 Responding to friend request:", {
+      requestId,
+      keycloakId,
+      action,
+    });
+
+    // VALIDATION
+    if (!requestId || !keycloakId || !action) {
+      return res.status(400).json({
+        status: "error",
+        message: "requestId, keycloakId, and action are required",
+      });
+    }
+
+    if (!["accept", "reject"].includes(action)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Action must be either 'accept' or 'reject'",
+      });
+    }
+
+    // TÌM FRIEND REQUEST
+    const friendRequest = await FriendRequest.findById(requestId);
+
+    if (!friendRequest) {
+      return res.status(404).json({
+        status: "error",
+        message: "Friend request not found",
+      });
+    }
+
+    // KIỂM TRA QUYỀN (chỉ recipient mới có thể respond)
+    if (friendRequest.recipient !== keycloakId) {
+      return res.status(403).json({
+        status: "error",
+        message: "Only the recipient can respond to this friend request",
+      });
+    }
+
+    if (friendRequest.status !== "Pending") {
+      return res.status(400).json({
+        status: "error",
+        message: "Friend request already processed",
+      });
+    }
+
+    // TÌM USERS
+    const [sender, recipient] = await Promise.all([
+      User.findOne({ keycloakId: friendRequest.sender }),
+      User.findOne({ keycloakId: friendRequest.recipient }),
+    ]);
+
+    if (!sender || !recipient) {
+      return res.status(404).json({
+        status: "error",
+        message: "Sender or recipient not found",
+      });
+    }
+
+    if (action === "accept") {
+      // THÊM VÀO DANH SÁCH BẠN BÈ
+      await Promise.all([
+        User.findOneAndUpdate(
+          { keycloakId: friendRequest.sender },
+          { $addToSet: { friends: friendRequest.recipient } }
+        ),
+        User.findOneAndUpdate(
+          { keycloakId: friendRequest.recipient },
+          { $addToSet: { friends: friendRequest.sender } }
+        ),
+      ]);
+
+      // CẬP NHẬT STATUS FRIEND REQUEST
+      friendRequest.status = "Accepted";
+      friendRequest.respondedAt = new Date();
+      await friendRequest.save();
+
+      console.log("✅ Friend request accepted");
+
+      // LẤY THÔNG TIN ĐẦY ĐỦ ĐỂ TRẢ VỀ
+      const [senderInfo, recipientInfo] = await Promise.all([
+        User.findOne({ keycloakId: friendRequest.sender }).select(
+          "keycloakId username fullName avatar"
+        ),
+        User.findOne({ keycloakId: friendRequest.recipient }).select(
+          "keycloakId username fullName avatar"
+        ),
+      ]);
+
+      const populatedRequest = {
+        _id: friendRequest._id,
+        sender: senderInfo,
+        recipient: recipientInfo,
+        status: friendRequest.status,
+        createdAt: friendRequest.createdAt,
+        respondedAt: friendRequest.respondedAt,
+      };
+
+      res.status(200).json({
+        status: "success",
+        message: "Friend request accepted",
+        data: populatedRequest,
+      });
+    } else if (action === "reject") {
+      // CẬP NHẬT STATUS FRIEND REQUEST
+      friendRequest.status = "Rejected";
+      friendRequest.respondedAt = new Date();
+      await friendRequest.save();
+
+      console.log("❌ Friend request rejected");
+
+      // LẤY THÔNG TIN ĐẦY ĐỦ ĐỂ TRẢ VỀ
+      const [senderInfo, recipientInfo] = await Promise.all([
+        User.findOne({ keycloakId: friendRequest.sender }).select(
+          "keycloakId username fullName avatar"
+        ),
+        User.findOne({ keycloakId: friendRequest.recipient }).select(
+          "keycloakId username fullName avatar"
+        ),
+      ]);
+
+      const populatedRequest = {
+        _id: friendRequest._id,
+        sender: senderInfo,
+        recipient: recipientInfo,
+        status: friendRequest.status,
+        createdAt: friendRequest.createdAt,
+        respondedAt: friendRequest.respondedAt,
+      };
+
+      res.status(200).json({
+        status: "success",
+        message: "Friend request rejected",
+        data: populatedRequest,
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error responding to friend request:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to respond to friend request",
+    });
+  }
 });
 
 /*
 |--------------------------------------------------------------------------
-| CALL MANAGEMENT
+| CALL MANAGEMENT - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
@@ -470,16 +1209,53 @@ exports.endCall = catchAsync(async (req, res) => {
 });
 
 exports.getCallHistory = catchAsync(async (req, res) => {
-  const calls = await Call.find({ participants: req.user._id })
-    .populate("participants", "firstName lastName username avatar")
-    .populate("room", "name");
+  const { keycloakId } = req.user;
 
-  res.status(200).json({ status: "success", data: calls });
+  console.log("📞 Fetching call history for user:", keycloakId);
+
+  const calls = await Call.find({ participants: keycloakId })
+    .populate("room", "name")
+    .sort({ startedAt: -1 })
+    .lean();
+
+  // Lấy thông tin user cho tất cả participants
+  const allParticipantIds = [
+    ...new Set(calls.flatMap((call) => call.participants)),
+  ];
+
+  const users = await User.find({
+    keycloakId: { $in: allParticipantIds },
+  }).select("keycloakId username fullName avatar status");
+
+  const userMap = users.reduce((map, user) => {
+    map[user.keycloakId] = user;
+    return map;
+  }, {});
+
+  // Map participants với user info
+  const callsWithUserDetails = calls.map((call) => ({
+    ...call,
+    participantsDetails: call.participants.map(
+      (participantId) =>
+        userMap[participantId] || {
+          keycloakId: participantId,
+          username: "Unknown User",
+          fullName: "Unknown User",
+          avatar: null,
+          status: "Offline",
+        }
+    ),
+  }));
+
+  res.status(200).json({
+    status: "success",
+    data: callsWithUserDetails,
+  });
 });
 
 /*
 |--------------------------------------------------------------------------
-| GET ALL ROOMS FOR USER (DIRECT + GROUP)
+| GET ALL ROOMS FOR USER (DIRECT + GROUP) - GIỮ NGUYÊN
 |--------------------------------------------------------------------------
 */
 
@@ -510,14 +1286,28 @@ exports.getUserRooms = catchAsync(async (req, res) => {
 const checkUserAccess = async (keycloakId, roomId) => {
   try {
     console.log("🔍 Checking user access:", { keycloakId, roomId });
+
     if (!mongoose.Types.ObjectId.isValid(roomId)) {
       console.log(`❌ Invalid roomId: ${roomId}`);
       return false;
     }
 
-    const room = await Room.findById(roomId);
+    // FIX: Tìm kiếm trong cả Room và OneToOneMessage
+    let room = await Room.findById(roomId);
+    let isOneToOneMessage = false;
+
     if (!room) {
-      console.log(`❌ Room not found: ${roomId}`);
+      // Nếu không tìm thấy trong Room, thử tìm trong OneToOneMessage
+      room = await OneToOneMessage.findById(roomId);
+      if (room) {
+        isOneToOneMessage = true;
+      }
+    } else {
+      console.log(`✅ Found in Room: ${roomId}`);
+    }
+
+    if (!room) {
+      console.log(`❌ Room/OneToOneMessage not found: ${roomId}`);
       return false;
     }
 
@@ -527,29 +1317,43 @@ const checkUserAccess = async (keycloakId, roomId) => {
       return false;
     }
 
-    // 🆕 FIX: Chuẩn hóa so sánh
-    if (room.isGroup) {
-      // Group chat: members chứa keycloakId (string)
-      const hasAccess = room.members && room.members.includes(keycloakId);
-      console.log(`🔍 Group room access check: ${hasAccess}`, {
+    // FIX: Logic kiểm tra quyền truy cập cho cả hai loại
+    if (isOneToOneMessage) {
+      // OneToOneMessage: participants chứa keycloakId (string)
+      const hasAccess =
+        room.participants && room.participants.includes(keycloakId);
+      console.log(`🔍 OneToOneMessage access check: ${hasAccess}`, {
         roomId,
         keycloakId,
-        members: room.members,
+        participants: room.participants,
+        userInParticipants: room.participants?.includes(keycloakId),
       });
       return hasAccess;
     } else {
-      // Direct chat: members chứa userId (ObjectId) - convert sang string để so sánh
-      const hasAccess =
-        room.members &&
-        room.members.some(
-          (member) => member.toString() === user._id.toString()
-        );
-      console.log(`🔍 Direct room access check: ${hasAccess}`, {
-        roomId,
-        userId: user._id,
-        members: room.members,
-      });
-      return hasAccess;
+      // Room collection
+      if (room.isGroup) {
+        // Group chat: members chứa keycloakId (string)
+        const hasAccess = room.members && room.members.includes(keycloakId);
+        console.log(`🔍 Group room access check: ${hasAccess}`, {
+          roomId,
+          keycloakId,
+          members: room.members,
+        });
+        return hasAccess;
+      } else {
+        // Direct chat trong Room collection: members chứa userId (ObjectId)
+        const hasAccess =
+          room.members &&
+          room.members.some(
+            (member) => member.toString() === user._id.toString()
+          );
+        console.log(`🔍 Direct room access check: ${hasAccess}`, {
+          roomId,
+          userId: user._id,
+          members: room.members,
+        });
+        return hasAccess;
+      }
     }
   } catch (error) {
     console.error("❌ Error in checkUserAccess:", error);
@@ -573,7 +1377,7 @@ exports.handlePinMessage = catchAsync(async (socket, data) => {
     });
   }
 
-  // 🆕 SỬA: Không cần populate vì sender là embedded object
+  // SỬA: Không cần populate vì sender là embedded object
   const message = await Message.findById(messageId);
 
   if (!message) {
@@ -583,7 +1387,7 @@ exports.handlePinMessage = catchAsync(async (socket, data) => {
     });
   }
 
-  // 🆕 DEBUG: Kiểm tra thông tin sender trong message
+  // DEBUG: Kiểm tra thông tin sender trong message
   console.log("🔍 Message sender debug:", {
     messageId: message._id,
     sender: message.sender,
@@ -617,7 +1421,7 @@ exports.handlePinMessage = catchAsync(async (socket, data) => {
     });
   }
 
-  // 🆕 SỬA: Cập nhật message - KHÔNG cần populate
+  // SỬA: Cập nhật message - KHÔNG cần populate
   const updatedMessage = await Message.findByIdAndUpdate(
     messageId,
     {
@@ -631,7 +1435,7 @@ exports.handlePinMessage = catchAsync(async (socket, data) => {
     }
   );
 
-  // 🆕 DEBUG: Kiểm tra message sau khi update
+  // DEBUG: Kiểm tra message sau khi update
   console.log("🔍 Updated message debug:", {
     messageId: updatedMessage._id,
     isPinned: updatedMessage.isPinned,
@@ -644,7 +1448,7 @@ exports.handlePinMessage = catchAsync(async (socket, data) => {
   const room = await Room.findById(actualRoomId);
   const chatType = room && room.isGroup ? "group" : "individual";
 
-  // 🆕 SỬA: Lấy danh sách pinned messages - KHÔNG cần populate
+  // SỬA: Lấy danh sách pinned messages - KHÔNG cần populate
   const pinnedMessages = await Message.find({
     room: actualRoomId,
     isPinned: true,
@@ -652,7 +1456,7 @@ exports.handlePinMessage = catchAsync(async (socket, data) => {
     .sort({ pinnedAt: -1 })
     .lean();
 
-  // 🆕 DEBUG: Kiểm tra dữ liệu pinned messages
+  // DEBUG: Kiểm tra dữ liệu pinned messages
   console.log("🔍 Pinned messages debug:", {
     count: pinnedMessages.length,
     messages: pinnedMessages.map((msg) => ({
@@ -672,7 +1476,7 @@ exports.handlePinMessage = catchAsync(async (socket, data) => {
     roomId: actualRoomId,
     pinnedAt: updatedMessage.pinnedAt,
     pinnedBy: keycloakId,
-    pinnedMessages: pinnedMessages, // 🆕 GỬI DANH SÁCH ĐẦY ĐỦ
+    pinnedMessages: pinnedMessages, // GỬI DANH SÁCH ĐẦY ĐỦ
   });
 
   // BROADCAST: Cập nhật danh sách pinned messages
@@ -700,7 +1504,7 @@ exports.handlePinMessage = catchAsync(async (socket, data) => {
     chatType,
     roomId: actualRoomId,
     pinnedMessagesCount: pinnedMessages.length,
-    senderName: message.sender?.name, // 🆕 THÊM sender name để debug
+    senderName: message.sender?.name, // THÊM sender name để debug
   });
 });
 
@@ -728,7 +1532,7 @@ exports.handleUnpinMessage = catchAsync(async (socket, data) => {
     });
   }
 
-  // 🆕 DEBUG: Kiểm tra sender trước khi unpin
+  // DEBUG: Kiểm tra sender trước khi unpin
   console.log("🔍 Message to unpin debug:", {
     messageId: message._id,
     sender: message.sender,
@@ -754,7 +1558,7 @@ exports.handleUnpinMessage = catchAsync(async (socket, data) => {
     });
   }
 
-  // 🆕 SỬA: Cập nhật message
+  // SỬA: Cập nhật message
   await Message.findByIdAndUpdate(
     messageId,
     {
@@ -768,7 +1572,7 @@ exports.handleUnpinMessage = catchAsync(async (socket, data) => {
     }
   );
 
-  // 🆕 SỬA: Lấy danh sách pinned messages mới nhất
+  // SỬA: Lấy danh sách pinned messages mới nhất
   const pinnedMessages = await Message.find({
     room: actualRoomId,
     isPinned: true,
@@ -780,7 +1584,7 @@ exports.handleUnpinMessage = catchAsync(async (socket, data) => {
   const room = await Room.findById(actualRoomId);
   const chatType = room && room.isGroup ? "group" : "individual";
 
-  // 🆕 CẢI THIỆN: Gửi event với đầy đủ thông tin
+  // CẢI THIỆN: Gửi event với đầy đủ thông tin
   socket.to(actualRoomId).emit("message_unpinned", {
     messageId: messageId,
     chatType: chatType,
@@ -788,7 +1592,7 @@ exports.handleUnpinMessage = catchAsync(async (socket, data) => {
     pinnedMessages: pinnedMessages,
   });
 
-  // 🆕 BROADCAST: Cập nhật danh sách pinned messages cho tất cả clients
+  // BROADCAST: Cập nhật danh sách pinned messages cho tất cả clients
   socket.to(actualRoomId).emit("pinned_messages_updated", {
     roomId: actualRoomId,
     chatType: chatType,
@@ -813,7 +1617,7 @@ exports.handleUnpinMessage = catchAsync(async (socket, data) => {
     chatType,
     roomId: actualRoomId,
     pinnedMessagesCount: pinnedMessages.length,
-    senderName: message.sender?.name, // 🆕 THÊM sender name để debug
+    senderName: message.sender?.name, // THÊM sender name để debug
   });
 });
 
@@ -845,7 +1649,7 @@ exports.getPinnedMessages = catchAsync(async (req, res) => {
     });
   }
 
-  // 🆕 SỬA: Lấy pinned messages - KHÔNG cần populate
+  // SỬA: Lấy pinned messages - KHÔNG cần populate
   const pinnedMessages = await Message.find({
     room: roomId,
     isPinned: true,
@@ -853,7 +1657,7 @@ exports.getPinnedMessages = catchAsync(async (req, res) => {
     .sort({ pinnedAt: -1 })
     .lean();
 
-  // 🆕 DEBUG: Log để kiểm tra dữ liệu trả về
+  // DEBUG: Log để kiểm tra dữ liệu trả về
   console.log("🔍 API Pinned messages debug:", {
     count: pinnedMessages.length,
     messages: pinnedMessages.map((msg) => ({
@@ -898,7 +1702,7 @@ exports.pinMessage = catchAsync(async (req, res) => {
     });
   }
 
-  // 🆕 DEBUG: Kiểm tra sender trong message gốc
+  // DEBUG: Kiểm tra sender trong message gốc
   console.log("🔍 Original message sender:", {
     sender: message.sender,
     senderId: message.sender?.id,
@@ -930,7 +1734,7 @@ exports.pinMessage = catchAsync(async (req, res) => {
     });
   }
 
-  // 🆕 SỬA: Sử dụng findByIdAndUpdate thay vì save()
+  // SỬA: Sử dụng findByIdAndUpdate thay vì save()
   const updatedMessage = await Message.findByIdAndUpdate(
     messageId,
     {
@@ -944,7 +1748,7 @@ exports.pinMessage = catchAsync(async (req, res) => {
     }
   );
 
-  // 🆕 SỬA: Lấy danh sách pinned messages mới nhất
+  // SỬA: Lấy danh sách pinned messages mới nhất
   const pinnedMessages = await Message.find({
     room: actualRoomId,
     isPinned: true,
@@ -1026,7 +1830,7 @@ exports.unpinMessage = catchAsync(async (req, res) => {
     });
   }
 
-  // 🆕 SỬA: Sử dụng findByIdAndUpdate thay vì save()
+  // SỬA: Sử dụng findByIdAndUpdate thay vì save()
   const updatedMessage = await Message.findByIdAndUpdate(
     messageId,
     {
@@ -1040,7 +1844,7 @@ exports.unpinMessage = catchAsync(async (req, res) => {
     }
   );
 
-  // 🆕 SỬA: Lấy danh sách pinned messages mới nhất
+  // SỬA: Lấy danh sách pinned messages mới nhất
   const pinnedMessages = await Message.find({
     room: actualRoomId,
     isPinned: true,
