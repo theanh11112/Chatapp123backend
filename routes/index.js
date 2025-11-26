@@ -5,6 +5,9 @@ const moderatorRoutes = require("./moderatorRoutes");
 const botRoutes = require("./botRoutes");
 const guestRoutes = require("./guestRoutes");
 const callRoutes = require("./callRoutes");
+const chatRoutes = require("./chatRoutes");
+const taskRoutes = require("./taskRoutes");
+const notificationRoutes = require("./notificationRoutes");
 
 module.exports = (keycloak) => {
   const router = express.Router();
@@ -15,6 +18,9 @@ module.exports = (keycloak) => {
   router.use("/bot", botRoutes(keycloak));
   router.use("/guest", guestRoutes(keycloak));
   router.use("/call", callRoutes(keycloak));
+  router.use("/chat", chatRoutes);
+  router.use("/task", taskRoutes(keycloak));
+  router.use("/notification", taskRoutes(keycloak));
 
   router.get("/", (req, res) => {
     res.json({ message: "✅ API Server is running with Keycloak" });

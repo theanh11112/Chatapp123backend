@@ -11,12 +11,18 @@ const { syncUserFromToken } = require("../utils/auth");
 const {
   handlePinMessage,
   handleUnpinMessage,
-} = require("../controllers/userController"); // 🆕 THÊM import
+} = require("../controllers/userController");
+
+// 🆕 THÊM: Import task controller
+const taskController = require("../controllers/taskController");
 
 const initSocket = (server) => {
   const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
   });
+
+  // 🆕 THÊM: Set socket io instance cho task controller
+  taskController.setSocketIo(io);
 
   // -----------------------------
   //  MIDDLEWARE AUTH SOCKET
@@ -61,6 +67,38 @@ const initSocket = (server) => {
     callEvents(socket, io);
     groupChatEvents(socket, io);
 
+    // 🆕 THÊM: TASK SOCKET EVENTS
+    console.log(`🔌 Setting up task socket handlers for user: ${keycloakId}`);
+
+    // Task Assignment
+    socket.on("task_assign", (data) => {
+      console.log("📨 Task assign event received:", data);
+      taskController.handleTaskAssignment(socket, data);
+    });
+
+    // Task Status Update
+    socket.on("task_update_status", (data) => {
+      console.log("📨 Task status update event received:", data);
+      taskController.handleTaskStatusUpdate(socket, data);
+    });
+
+    // Task Room Management
+    socket.on("task_join_room", (data) => {
+      console.log("📨 Task join room event received:", data);
+      taskController.handleJoinTaskRoom(socket, data);
+    });
+
+    socket.on("task_leave_room", (data) => {
+      console.log("📨 Task leave room event received:", data);
+      taskController.handleLeaveTaskRoom(socket, data);
+    });
+
+    // Task Comments
+    socket.on("task_add_comment", (data) => {
+      console.log("📨 Task add comment event received:", data);
+      taskController.handleTaskComment(socket, data);
+    });
+
     // 🆕 THÊM: Pin/Unpin message events
     socket.on("pin_direct_message", (data) => {
       console.log("📌 Pin direct message event received:", data);
@@ -93,6 +131,8 @@ const initSocket = (server) => {
       handleUnpinMessage(socket, data);
     });
 
+    console.log("✅ Task socket handlers registered successfully");
+
     // Broadcast realtime cho tất cả bạn bè hoặc toàn bộ app - ĐÃ SỬA
     socket.broadcast.emit("user_online", {
       userId: socket.user.keycloakId,
@@ -110,12 +150,18 @@ const initSocket = (server) => {
     }).catch((err) => console.error("AuditLog error:", err.message));
 
     // -----------------------------
-    //  ON DISCONNECT
+    //  ON DISCONNECT - 🆕 THÊM: Cleanup task rooms
     // -----------------------------
     socket.on("disconnect", async () => {
       try {
         const user = await User.findOne({ keycloakId });
         if (!user) return;
+
+        // 🆕 THÊM: Tự động leave tất cả task rooms khi disconnect
+        // Có thể implement logic để track user đang ở trong哪些 task rooms
+        console.log(
+          `🔌 User ${keycloakId} leaving all task rooms due to disconnect`
+        );
 
         // Chỉ cập nhật nếu socketId disconnect là socketId hiện tại - ĐÃ SỬA
         if (user.socketId === socket.id) {
