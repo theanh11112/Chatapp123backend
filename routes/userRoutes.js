@@ -1,3 +1,4 @@
+// routes/userRoutes.js
 const express = require("express");
 const userController = require("../controllers/userController");
 const { requireRole, syncUserFromToken } = require("../utils/auth");
@@ -72,7 +73,34 @@ module.exports = (keycloak) => {
     userController.searchUsers
   );
 
-  // ====================== FRIEND MANAGEMENT ====================== 🆕 THÊM
+  // 🆕 THÊM: Cập nhật trạng thái user (chỉ admin/moderator)
+  router.patch(
+    "/update-status",
+    keycloak.protect(),
+    syncUser,
+    allowAdminAndModerator,
+    userController.updateUserStatus
+  );
+
+  // 🆕 THÊM: Cập nhật vai trò user (chỉ admin/moderator)
+  router.patch(
+    "/update-role",
+    keycloak.protect(),
+    syncUser,
+    allowAdminAndModerator,
+    userController.updateUserRole
+  );
+
+  // 🆕 THÊM: Cập nhật vai trò user (chỉ admin/moderator)
+  router.patch(
+    "/remove-role",
+    keycloak.protect(),
+    syncUser,
+    allowAdminAndModerator,
+    userController.removeUserRole
+  );
+
+  // ====================== FRIEND MANAGEMENT ======================
   router.post(
     "/get-friends",
     keycloak.protect(),
@@ -230,7 +258,7 @@ module.exports = (keycloak) => {
     userController.createPrivateRoom
   );
 
-  // ====================== FRIEND LIST ====================== 🆕 DI CHUYỂN XUỐNG
+  // ====================== FRIEND LIST ======================
   router.get(
     "/friends",
     keycloak.protect(),

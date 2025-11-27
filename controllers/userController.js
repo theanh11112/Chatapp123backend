@@ -21,6 +21,8 @@ exports.setSocketIo = (socketIoInstance) => {
 
 // 🆕 THÊM: Lấy danh sách tất cả users (cho tạo group)
 // GET /users/get-users
+// controllers/userController.js - SỬA HÀM getAllUsers
+// controllers/userController.js - SỬA LẠI HOÀN TOÀN HÀM getAllUsers
 exports.getAllUsers = catchAsync(async (req, res) => {
   try {
     console.log("🔍 Fetching all users...");
@@ -29,11 +31,44 @@ exports.getAllUsers = catchAsync(async (req, res) => {
     const currentUserId = req.user?.keycloakId;
     const query = currentUserId ? { keycloakId: { $ne: currentUserId } } : {};
 
-    const users = await User.find(query)
+    let users = await User.find(query)
       .select(
-        "keycloakId username firstName lastName email avatar status lastSeen"
+        "keycloakId username firstName lastName email avatar status lastSeen isActive roles createdAt lastLoginAt"
       )
       .sort({ firstName: 1, lastName: 1 });
+
+    // 🆕 LỌC BỎ CÁC ROLE KEYCLOAK MẶC ĐỊNH - SỬA LẠI LOGIC
+    const keycloakDefaultRoles = [
+      "offline_access",
+      "default-roles-chat-app",
+      "uma_authorization",
+      "default-roles-master",
+    ];
+
+    users = users.map((user) => {
+      const userObj = user.toObject();
+
+      // 🆕 Lọc roles - LOẠI BỎ role Keycloak mặc định, CHỈ GIỮ LẠI role quan trọng
+      const filteredRoles = userObj.roles
+        ? userObj.roles.filter((role) => !keycloakDefaultRoles.includes(role))
+        : ["user"];
+
+      // 🆕 Đảm bảo luôn có ít nhất role 'user'
+      const finalRoles = filteredRoles.length > 0 ? filteredRoles : ["user"];
+
+      return {
+        ...userObj,
+        // 🆕 THAY THẾ HOÀN TOÀN roles bằng filtered roles
+        roles: finalRoles,
+        // Fallback cho các field khác
+        isActive: userObj.isActive !== undefined ? userObj.isActive : true,
+        firstName: userObj.firstName || userObj.username,
+        lastName: userObj.lastName || "",
+      };
+    });
+
+    console.log("✅ Users fetched with filtered roles:", users.length);
+    console.log("🔍 Sample user roles after filtering:", users[0]?.roles);
 
     res.status(200).json({
       status: "success",
@@ -177,6 +212,188 @@ exports.searchUsers = catchAsync(async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Failed to search users",
+    });
+  }
+});
+
+// controllers/userController.js - THÊM VÀO CUỐI FILE
+
+/*
+|--------------------------------------------------------------------------
+| USER ADMIN MANAGEMENT - 🆕 THÊM MỚI
+|--------------------------------------------------------------------------
+*/
+
+// 🆕 THÊM: Cập nhật trạng thái user (active/inactive)
+// PATCH /users/update-status
+exports.updateUserStatus = catchAsync(async (req, res) => {
+  try {
+    const { userId, isActive } = req.body;
+
+    console.log("🔄 Updating user status:", { userId, isActive });
+
+    // VALIDATION
+    if (!userId || typeof isActive !== "boolean") {
+      return res.status(400).json({
+        status: "error",
+        message: "userId and isActive (boolean) are required",
+      });
+    }
+
+    // TÌM VÀ CẬP NHẬT USER
+    const user = await User.findOneAndUpdate(
+      { keycloakId: userId },
+      {
+        isActive: isActive,
+        ...(isActive === false ? { status: "Offline" } : {}), // Nếu deactive thì set offline
+      },
+      { new: true }
+    ).select(
+      "keycloakId username firstName lastName email isActive status roles"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    console.log("✅ User status updated successfully:", user.keycloakId);
+
+    res.status(200).json({
+      status: "success",
+      message: `User ${isActive ? "activated" : "deactivated"} successfully`,
+      data: user,
+    });
+  } catch (error) {
+    console.error("❌ Error updating user status:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to update user status",
+    });
+  }
+});
+
+// 🆕 THÊM: Cập nhật vai trò user
+// PATCH /users/update-role
+exports.updateUserRole = catchAsync(async (req, res) => {
+  try {
+    const { userId, role } = req.body;
+
+    console.log("🔄 Updating user role:", { userId, role });
+
+    // VALIDATION
+    if (!userId || !role) {
+      return res.status(400).json({
+        status: "error",
+        message: "userId and role are required",
+      });
+    }
+
+    // KIỂM TRA ROLE HỢP LỆ
+    const validRoles = ["user", "admin", "moderator", "bot"];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({
+        status: "error",
+        message: `Invalid role. Must be one of: ${validRoles.join(", ")}`,
+      });
+    }
+
+    // TÌM VÀ CẬP NHẬT USER
+    const user = await User.findOneAndUpdate(
+      { keycloakId: userId },
+      {
+        $addToSet: { roles: role }, // Thêm role vào mảng (không trùng lặp)
+      },
+      { new: true }
+    ).select(
+      "keycloakId username firstName lastName email isActive status roles"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    console.log("✅ User role updated successfully:", {
+      userId: user.keycloakId,
+      newRoles: user.roles,
+    });
+
+    res.status(200).json({
+      status: "success",
+      message: `Role '${role}' added to user successfully`,
+      data: user,
+    });
+  } catch (error) {
+    console.error("❌ Error updating user role:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to update user role",
+    });
+  }
+});
+
+// 🆕 THÊM: Xóa role khỏi user
+// PATCH /users/remove-role
+exports.removeUserRole = catchAsync(async (req, res) => {
+  try {
+    const { userId, role } = req.body;
+
+    console.log("🔄 Removing user role:", { userId, role });
+
+    // VALIDATION
+    if (!userId || !role) {
+      return res.status(400).json({
+        status: "error",
+        message: "userId and role are required",
+      });
+    }
+
+    // KHÔNG CHO PHÉP XÓA ROLE 'user' (mặc định)
+    if (role === "user") {
+      return res.status(400).json({
+        status: "error",
+        message: "Cannot remove default 'user' role",
+      });
+    }
+
+    // TÌM VÀ CẬP NHẬT USER
+    const user = await User.findOneAndUpdate(
+      { keycloakId: userId },
+      {
+        $pull: { roles: role }, // Xóa role khỏi mảng
+      },
+      { new: true }
+    ).select(
+      "keycloakId username firstName lastName email isActive status roles"
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    console.log("✅ User role removed successfully:", {
+      userId: user.keycloakId,
+      remainingRoles: user.roles,
+    });
+
+    res.status(200).json({
+      status: "success",
+      message: `Role '${role}' removed from user successfully`,
+      data: user,
+    });
+  } catch (error) {
+    console.error("❌ Error removing user role:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to remove user role",
     });
   }
 });

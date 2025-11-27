@@ -24,6 +24,8 @@ const callRoutes = require("./routes/callRoutes");
 const chatRoutes = require("./routes/chatRoutes");
 const taskRoutes = require("./routes/taskRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
+const analyticsRoutes = require("./routes/analyticsRoutes");
+const reminderRoutes = require("./routes/reminderRoutes");
 
 // Khởi tạo Express app
 const app = express();
@@ -90,6 +92,8 @@ app.use("/call", callRoutes(keycloak));
 app.use("/chat", chatRoutes);
 app.use("/tasks", taskRoutes);
 app.use("/notifications", notificationRoutes);
+app.use("/analytics", analyticsRoutes);
+app.use("/reminders", reminderRoutes);
 
 // ==================
 // 🧱 Kiểm tra API mặc định
