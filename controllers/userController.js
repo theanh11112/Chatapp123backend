@@ -430,12 +430,16 @@ exports.updateMe = catchAsync(async (req, res) => {
     "firstName",
     "lastName",
     "about",
-    "avatar"
+    "avatar",
+    "username", // ✅ THÊM field name
+    "status" // ✅ THÊM field status
   );
 
   const updatedUser = await User.findByIdAndUpdate(req.user._id, filteredBody, {
     new: true,
   });
+
+  console.log("22222", updatedUser);
 
   res.status(200).json({
     status: "success",

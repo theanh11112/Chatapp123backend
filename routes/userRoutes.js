@@ -49,7 +49,7 @@ module.exports = (keycloak) => {
     userController.getProfile
   );
   router.patch(
-    "/me",
+    "/update-me",
     keycloak.protect(),
     syncUser,
     allowUsers,

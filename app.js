@@ -26,6 +26,7 @@ const taskRoutes = require("./routes/taskRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
 const reminderRoutes = require("./routes/reminderRoutes");
+const settingsRoutes = require("./routes/settingsRoutes");
 
 // Khởi tạo Express app
 const app = express();
@@ -94,6 +95,7 @@ app.use("/tasks", taskRoutes);
 app.use("/notifications", notificationRoutes);
 app.use("/analytics", analyticsRoutes);
 app.use("/reminders", reminderRoutes);
+app.use("/settings", settingsRoutes);
 
 // ==================
 // 🧱 Kiểm tra API mặc định
