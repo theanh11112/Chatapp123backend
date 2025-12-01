@@ -5,21 +5,26 @@ const taskSchema = new mongoose.Schema(
   {
     title: {
       type: String,
-      required: [true, "Tiêu đề task là bắt buộc"],
+      required: true,
       trim: true,
-      maxlength: [255, "Tiêu đề không quá 255 ký tự"],
     },
     description: {
       type: String,
-      trim: true,
       default: "",
     },
-    assignerId: {
-      type: String, // 🆕 THAY ĐỔI: String thay vì ObjectId
+    // 🆕 THAY ĐỔI: assigneeId thành mảng
+    assigneeIds: {
+      type: [String], // Mảng keycloakIds
       required: true,
+      validate: {
+        validator: function (v) {
+          return v.length > 0; // Phải có ít nhất 1 người nhận
+        },
+        message: "Task phải có ít nhất 1 người nhận",
+      },
     },
-    assigneeId: {
-      type: String, // 🆕 THAY ĐỔI: String thay vì ObjectId
+    assignerId: {
+      type: String, // keycloakId của người giao
       required: true,
     },
     status: {
@@ -29,34 +34,27 @@ const taskSchema = new mongoose.Schema(
     },
     priority: {
       type: String,
-      enum: ["low", "medium", "high"],
+      enum: ["low", "medium", "high", "urgent"],
       default: "medium",
     },
     dueDate: {
       type: Date,
-      required: false,
+      default: null,
     },
-    tags: [
-      {
-        type: String,
-        trim: true,
-      },
-    ],
+    tags: [String],
     estimatedHours: {
       type: Number,
-      min: 0,
-    },
-    actualHours: {
-      type: Number,
-      min: 0,
       default: 0,
     },
     activityLog: [
       {
         action: String,
-        userId: String, // 🆕 THAY ĐỔI: String
-        timestamp: Date,
-        details: Object,
+        userId: String,
+        timestamp: {
+          type: Date,
+          default: Date.now,
+        },
+        details: mongoose.Schema.Types.Mixed,
       },
     ],
   },
@@ -65,9 +63,10 @@ const taskSchema = new mongoose.Schema(
   }
 );
 
-// Index để query nhanh hơn
-taskSchema.index({ assigneeId: 1, status: 1 });
-taskSchema.index({ dueDate: 1 });
+// Indexes
 taskSchema.index({ assignerId: 1 });
+taskSchema.index({ assigneeIds: 1 }); // 🆕 Index cho mảng assigneeIds
+taskSchema.index({ status: 1 });
+taskSchema.index({ dueDate: 1 });
 
 module.exports = mongoose.model("Task", taskSchema);

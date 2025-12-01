@@ -12,50 +12,48 @@ exports.setSocketIo = (socketIoInstance) => {
 
 /*
 |--------------------------------------------------------------------------
-| REMINDER MANAGEMENT - CHO CẢ ADMIN VÀ USER
+| REMINDER MANAGEMENT - ĐƠN GIẢN: MỖI REMINDER CHỈ THUỘC VỀ 1 USER
 |--------------------------------------------------------------------------
 */
 
-// 🆕 Tạo reminder mới
+// 🎯 Tạo reminder mới - CHỈ CHO CHÍNH MÌNH
 // POST /reminders/create
 exports.createReminder = catchAsync(async (req, res) => {
   try {
     const {
-      taskId,
+      taskId, // 🎯 OPTIONAL: chỉ dùng cho reminder task
       keycloakId,
       remindAt,
-      message = "Nhắc nhở task của bạn!",
-      reminderType = "custom",
+      title,
+      description = "",
+      reminderType = "personal",
     } = req.body;
 
-    console.log("⏰ Creating reminder:", { taskId, keycloakId, remindAt });
+    console.log("⏰ Creating reminder:", {
+      type: taskId ? "TASK_REMINDER" : "PERSONAL_REMINDER",
+      taskId,
+      keycloakId,
+      title,
+    });
 
-    // VALIDATION
-    if (!taskId || !keycloakId || !remindAt) {
+    // 🎯 VALIDATION CHUNG
+    if (!keycloakId || !remindAt || !title?.trim()) {
       return res.status(400).json({
         status: "error",
-        message: "taskId, keycloakId và remindAt là bắt buộc",
+        message: "keycloakId, remindAt và title là bắt buộc",
       });
     }
 
-    // KIỂM TRA TASK TỒN TẠI
-    const task = await Task.findById(taskId);
-    if (!task) {
+    // 🆕 KIỂM TRA USER TỒN TẠI
+    const user = await User.findOne({ keycloakId });
+    if (!user) {
       return res.status(404).json({
         status: "error",
-        message: "Không tìm thấy task",
+        message: "Không tìm thấy người dùng",
       });
     }
 
-    // KIỂM TRA QUYỀN TRUY CẬP
-    if (task.assigneeId !== keycloakId && task.assignerId !== keycloakId) {
-      return res.status(403).json({
-        status: "error",
-        message: "Không có quyền tạo reminder cho task này",
-      });
-    }
-
-    // VALIDATION REMIND AT
+    // 🎯 VALIDATION REMIND AT
     const remindAtDate = new Date(remindAt);
     if (isNaN(remindAtDate.getTime())) {
       return res.status(400).json({
@@ -71,33 +69,97 @@ exports.createReminder = catchAsync(async (req, res) => {
       });
     }
 
-    // TẠO REMINDER
-    const reminder = await Reminder.create({
-      taskId: taskId,
+    // 🎯 XỬ LÝ REMINDER CHO TASK
+    let task = null;
+
+    // 🆕 SỬA: Kiểm tra taskId có tồn tại và không rỗng
+    if (taskId && taskId.trim() !== "") {
+      task = await Task.findById(taskId);
+      if (!task) {
+        return res.status(404).json({
+          status: "error",
+          message: "Không tìm thấy task",
+        });
+      }
+
+      // 🆕 KIỂM TRA QUYỀN: chỉ người liên quan đến task mới tạo reminder
+      const isTaskRelated =
+        task.assignerId === keycloakId || task.assigneeIds.includes(keycloakId);
+
+      if (!isTaskRelated) {
+        return res.status(403).json({
+          status: "error",
+          message: "Không có quyền tạo reminder cho task này",
+        });
+      }
+
+      // 🆕 SỬA: Dùng biến mới thay vì gán lại reminderType
+    }
+
+    // 🆕 SỬA: Tạo biến mới cho reminder type
+    const finalReminderType =
+      taskId && taskId.trim() !== "" ? "task_reminder" : reminderType;
+
+    // 🎯 TẠO REMINDER DATA - ĐƠN GIẢN
+    const reminderData = {
       userId: keycloakId,
       remindAt: remindAtDate,
-      message: message,
-      reminderType: reminderType,
+      title: title.trim(),
+      description: description.trim(),
+      reminderType: finalReminderType, // 🆕 DÙNG BIẾN MỚI
       isSent: false,
+      isActive: true,
+    };
+
+    // 🎯 THÊM TASK ID NẾU LÀ REMINDER CHO TASK
+    if (taskId && taskId.trim() !== "") {
+      reminderData.taskId = taskId;
+
+      // Tự động thêm mô tả nếu không có
+      if (!description.trim() && task) {
+        reminderData.description = `Nhắc nhở cho task: ${task.title}`;
+      }
+    }
+
+    // TẠO REMINDER
+    const reminder = await Reminder.create(reminderData);
+
+    console.log("✅ Reminder created successfully:", {
+      id: reminder._id,
+      type: taskId ? "TASK_REMINDER" : "PERSONAL_REMINDER",
+      user: keycloakId,
+      title: reminder.title,
     });
 
-    console.log("✅ Reminder created successfully:", reminder._id);
+    // 🆕 REAL-TIME NOTIFICATION CHỈ CHO CHÍNH MÌNH
+    if (io) {
+      io.to(`user_${keycloakId}`).emit("reminder_created", {
+        reminderId: reminder._id,
+        title: reminder.title,
+        remindAt: reminder.remindAt,
+        message: taskId
+          ? `Bạn có nhắc nhở mới về task: ${reminder.title}`
+          : `Bạn có nhắc nhở cá nhân: ${reminder.title}`,
+      });
+    }
 
     res.status(201).json({
       status: "success",
-      message: "Tạo reminder thành công",
+      message: taskId
+        ? "Đã tạo nhắc nhở cho task thành công"
+        : "Đã tạo nhắc nhở cá nhân thành công",
       data: reminder,
     });
   } catch (error) {
     console.error("❌ Error creating reminder:", error);
     res.status(500).json({
       status: "error",
-      message: "Lỗi khi tạo reminder",
+      message: "Lỗi khi tạo reminder: " + error.message,
     });
   }
 });
 
-// 🆕 Lấy danh sách reminders của user
+// 🎯 Lấy danh sách reminders của user - ĐƠN GIẢN
 // POST /reminders/get-user-reminders
 exports.getUserReminders = catchAsync(async (req, res) => {
   try {
@@ -119,8 +181,12 @@ exports.getUserReminders = catchAsync(async (req, res) => {
 
     const skip = (page - 1) * limit;
 
-    // BUILD QUERY
-    const query = { userId: keycloakId };
+    // 🆕 BUILD QUERY ĐƠN GIẢN: chỉ lấy reminders của user
+    const query = {
+      userId: keycloakId, // 🆕 CHỈ userId - KHÔNG CÓ recipientIds
+      isActive: true,
+    };
+
     if (!showSent) {
       query.isSent = false;
       query.remindAt = { $gte: new Date() };
@@ -131,42 +197,50 @@ exports.getUserReminders = catchAsync(async (req, res) => {
       .populate({
         path: "taskId",
         select:
-          "title description status priority dueDate assigneeId assignerId",
+          "title description status priority dueDate assignerId assigneeIds",
       })
       .sort({ remindAt: 1 })
       .skip(skip)
       .limit(limit)
       .lean();
 
-    // POPULATE USER INFO CHO TASKS
+    // 🆕 POPULATE CREATOR INFO
     const populatedReminders = await Promise.all(
       reminders.map(async (reminder) => {
-        if (reminder.taskId) {
-          // Lấy thông tin assigner và assignee
-          const [assigner, assignee] = await Promise.all([
+        const creator = await User.findOne({ keycloakId: reminder.userId });
+        reminder.creatorInfo = {
+          keycloakId: reminder.userId,
+          username: creator?.username || "Unknown",
+          firstName: creator?.firstName || "Unknown",
+          lastName: creator?.lastName || "User",
+        };
+
+        // POPULATE TASK INFO NẾU CÓ
+        if (reminder.taskId && reminder.taskId._id) {
+          const [assigner, assignees] = await Promise.all([
             User.findOne({ keycloakId: reminder.taskId.assignerId }),
-            User.findOne({ keycloakId: reminder.taskId.assigneeId }),
+            User.find({ keycloakId: { $in: reminder.taskId.assigneeIds } }),
           ]);
 
-          return {
-            ...reminder,
-            taskId: {
-              ...reminder.taskId,
-              assignerInfo: {
-                keycloakId: reminder.taskId.assignerId,
-                username: assigner?.username || "Unknown",
-                firstName: assigner?.firstName || "Unknown",
-                lastName: assigner?.lastName || "User",
-              },
-              assigneeInfo: {
-                keycloakId: reminder.taskId.assigneeId,
-                username: assignee?.username || "Unknown",
-                firstName: assignee?.firstName || "Unknown",
-                lastName: assignee?.lastName || "User",
-              },
+          reminder.taskId = {
+            ...reminder.taskId,
+            assignerInfo: {
+              keycloakId: reminder.taskId.assignerId,
+              username: assigner?.username || "Unknown",
+              firstName: assigner?.firstName || "Unknown",
+              lastName: assigner?.lastName || "User",
             },
+            assigneesInfo: assignees.map((assignee) => ({
+              keycloakId: assignee.keycloakId,
+              username: assignee.username || "Unknown",
+              firstName: assignee.firstName || "Unknown",
+              lastName: assignee.lastName || "User",
+              avatar: assignee.avatar,
+            })),
+            totalAssignees: reminder.taskId.assigneeIds?.length || 0,
           };
         }
+
         return reminder;
       })
     );
@@ -197,7 +271,7 @@ exports.getUserReminders = catchAsync(async (req, res) => {
   }
 });
 
-// 🆕 Lấy chi tiết reminder
+// 🎯 Lấy chi tiết reminder - ĐƠN GIẢN
 // POST /reminders/get-detail
 exports.getReminderDetail = catchAsync(async (req, res) => {
   try {
@@ -217,7 +291,7 @@ exports.getReminderDetail = catchAsync(async (req, res) => {
       .populate({
         path: "taskId",
         select:
-          "title description status priority dueDate assigneeId assignerId",
+          "title description status priority dueDate assignerId assigneeIds",
       })
       .lean();
 
@@ -228,42 +302,22 @@ exports.getReminderDetail = catchAsync(async (req, res) => {
       });
     }
 
-    // KIỂM TRA QUYỀN TRUY CẬP
+    // 🆕 KIỂM TRA QUYỀN TRUY CẬP: user phải là chủ sở hữu
     if (reminder.userId !== keycloakId) {
-      // KIỂM TRA NẾU USER CÓ QUYỀN TRUY CẬP TASK
-      const task = await Task.findById(reminder.taskId._id);
-      if (
-        !task ||
-        (task.assigneeId !== keycloakId && task.assignerId !== keycloakId)
-      ) {
-        return res.status(403).json({
-          status: "error",
-          message: "Không có quyền truy cập reminder này",
-        });
-      }
+      return res.status(403).json({
+        status: "error",
+        message: "Không có quyền truy cập reminder này",
+      });
     }
 
-    // POPULATE USER INFO CHO TASK
-    if (reminder.taskId) {
-      const [assigner, assignee] = await Promise.all([
-        User.findOne({ keycloakId: reminder.taskId.assignerId }),
-        User.findOne({ keycloakId: reminder.taskId.assigneeId }),
-      ]);
-
-      reminder.taskId.assignerInfo = {
-        keycloakId: reminder.taskId.assignerId,
-        username: assigner?.username || "Unknown",
-        firstName: assigner?.firstName || "Unknown",
-        lastName: assigner?.lastName || "User",
-      };
-
-      reminder.taskId.assigneeInfo = {
-        keycloakId: reminder.taskId.assigneeId,
-        username: assignee?.username || "Unknown",
-        firstName: assignee?.firstName || "Unknown",
-        lastName: assignee?.lastName || "User",
-      };
-    }
+    // 🆕 POPULATE CREATOR INFO
+    const creator = await User.findOne({ keycloakId: reminder.userId });
+    reminder.creatorInfo = {
+      keycloakId: reminder.userId,
+      username: creator?.username || "Unknown",
+      firstName: creator?.firstName || "Unknown",
+      lastName: creator?.lastName || "User",
+    };
 
     console.log("✅ Reminder detail fetched successfully:", reminderId);
 
@@ -280,8 +334,9 @@ exports.getReminderDetail = catchAsync(async (req, res) => {
   }
 });
 
-// 🆕 Cập nhật reminder
+// 🎯 Cập nhật reminder - ĐƠN GIẢN
 // PATCH /reminders/update
+// Trong exports.updateReminder - THÊM PHẦN XỬ LÝ isCompleted
 exports.updateReminder = catchAsync(async (req, res) => {
   try {
     const { reminderId, keycloakId, updates } = req.body;
@@ -304,12 +359,45 @@ exports.updateReminder = catchAsync(async (req, res) => {
       });
     }
 
-    // KIỂM TRA QUYỀN TRUY CẬP
+    // 🆕 KIỂM TRA QUYỀN: chỉ chủ sở hữu mới được update
     if (reminder.userId !== keycloakId) {
       return res.status(403).json({
         status: "error",
         message: "Chỉ người tạo reminder mới được cập nhật",
       });
+    }
+
+    // 🆕 XỬ LÝ isCompleted: tự động set completedAt nếu isCompleted = true
+    if (updates.hasOwnProperty("isCompleted")) {
+      if (updates.isCompleted === true) {
+        updates.completedAt = new Date();
+        // 🆕 Nếu đánh dấu hoàn thành, cũng set isSent = true
+        updates.isSent = true;
+      } else {
+        updates.completedAt = null;
+      }
+    }
+
+    // 🆕 KIỂM TRA TASK NẾU CÓ UPDATE TASK ID
+    if (updates.taskId) {
+      const task = await Task.findById(updates.taskId);
+      if (!task) {
+        return res.status(404).json({
+          status: "error",
+          message: "Không tìm thấy task",
+        });
+      }
+
+      // KIỂM TRA QUYỀN TRUY CẬP TASK MỚI
+      const isTaskRelated =
+        task.assignerId === keycloakId || task.assigneeIds.includes(keycloakId);
+
+      if (!isTaskRelated) {
+        return res.status(403).json({
+          status: "error",
+          message: "Không có quyền liên kết reminder với task này",
+        });
+      }
     }
 
     // VALIDATION REMIND AT NẾU CÓ UPDATE
@@ -324,10 +412,8 @@ exports.updateReminder = catchAsync(async (req, res) => {
       updates.remindAt = remindAtDate;
     }
 
-    // KHÔNG CHO PHÉP UPDATE isSent
-    if (updates.hasOwnProperty("isSent")) {
-      delete updates.isSent;
-    }
+    // KHÔNG CHO PHÉP UPDATE userId
+    if (updates.hasOwnProperty("userId")) delete updates.userId;
 
     // CẬP NHẬT REMINDER
     const updatedReminder = await Reminder.findByIdAndUpdate(
@@ -339,7 +425,8 @@ exports.updateReminder = catchAsync(async (req, res) => {
       { new: true, runValidators: true }
     ).populate({
       path: "taskId",
-      select: "title description status priority dueDate assigneeId assignerId",
+      select:
+        "title description status priority dueDate assignerId assigneeIds",
     });
 
     console.log("✅ Reminder updated successfully:", reminderId);
@@ -358,7 +445,7 @@ exports.updateReminder = catchAsync(async (req, res) => {
   }
 });
 
-// 🆕 Xóa reminder
+// 🎯 Xóa reminder - ĐƠN GIẢN
 // POST /reminders/delete
 exports.deleteReminder = catchAsync(async (req, res) => {
   try {
@@ -382,7 +469,7 @@ exports.deleteReminder = catchAsync(async (req, res) => {
       });
     }
 
-    // KIỂM TRA QUYỀN TRUY CẬP
+    // 🆕 KIỂM TRA QUYỀN: chỉ chủ sở hữu mới được xóa
     if (reminder.userId !== keycloakId) {
       return res.status(403).json({
         status: "error",
@@ -390,8 +477,11 @@ exports.deleteReminder = catchAsync(async (req, res) => {
       });
     }
 
-    // XÓA REMINDER
-    await Reminder.findByIdAndDelete(reminderId);
+    // XÓA REMINDER (soft delete bằng cách set isActive = false)
+    await Reminder.findByIdAndUpdate(reminderId, {
+      isActive: false,
+      updatedAt: new Date(),
+    });
 
     console.log("✅ Reminder deleted successfully:", reminderId);
 
@@ -408,7 +498,7 @@ exports.deleteReminder = catchAsync(async (req, res) => {
   }
 });
 
-// 🆕 Lấy reminders sắp tới (cho dashboard)
+// 🎯 Lấy reminders sắp tới (cho dashboard) - ĐƠN GIẢN
 // POST /reminders/upcoming
 exports.getUpcomingReminders = catchAsync(async (req, res) => {
   try {
@@ -423,52 +513,62 @@ exports.getUpcomingReminders = catchAsync(async (req, res) => {
       });
     }
 
-    // LẤY REMINDERS SẮP TỚI (TRONG 7 NGÀY TỚI)
+    // LẤY REMINDERS SẮP TỚI (TRONG 7 NGÀY TỚI) - CHỈ CỦA CHÍNH MÌNH
     const sevenDaysFromNow = new Date();
     sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
 
     const reminders = await Reminder.find({
-      userId: keycloakId,
+      userId: keycloakId, // 🆕 CHỈ userId
       remindAt: {
         $gte: new Date(),
         $lte: sevenDaysFromNow,
       },
       isSent: false,
+      isActive: true,
     })
       .populate({
         path: "taskId",
-        select: "title status priority dueDate assigneeId assignerId",
+        select: "title status priority dueDate assignerId assigneeIds",
       })
       .sort({ remindAt: 1 })
       .limit(limit)
       .lean();
 
-    // POPULATE USER INFO
+    // 🆕 POPULATE THÔNG TIN
     const populatedReminders = await Promise.all(
       reminders.map(async (reminder) => {
-        if (reminder.taskId) {
-          const [assigner, assignee] = await Promise.all([
+        // Populate creator info
+        const creator = await User.findOne({ keycloakId: reminder.userId });
+        reminder.creatorInfo = {
+          keycloakId: reminder.userId,
+          username: creator?.username || "Unknown",
+          firstName: creator?.firstName || "Unknown",
+          lastName: creator?.lastName || "User",
+        };
+
+        // Populate task info nếu có
+        if (reminder.taskId && reminder.taskId._id) {
+          const [assigner, assignees] = await Promise.all([
             User.findOne({ keycloakId: reminder.taskId.assignerId }),
-            User.findOne({ keycloakId: reminder.taskId.assigneeId }),
+            User.find({ keycloakId: { $in: reminder.taskId.assigneeIds } }),
           ]);
 
-          return {
-            ...reminder,
-            taskId: {
-              ...reminder.taskId,
-              assignerInfo: {
-                keycloakId: reminder.taskId.assignerId,
-                username: assigner?.username || "Unknown",
-                firstName: assigner?.firstName || "Unknown",
-                lastName: assigner?.lastName || "User",
-              },
-              assigneeInfo: {
-                keycloakId: reminder.taskId.assigneeId,
-                username: assignee?.username || "Unknown",
-                firstName: assignee?.firstName || "Unknown",
-                lastName: assignee?.lastName || "User",
-              },
+          reminder.taskId = {
+            ...reminder.taskId,
+            assignerInfo: {
+              keycloakId: reminder.taskId.assignerId,
+              username: assigner?.username || "Unknown",
+              firstName: assigner?.firstName || "Unknown",
+              lastName: assigner?.lastName || "User",
             },
+            assigneesInfo: assignees.map((assignee) => ({
+              keycloakId: assignee.keycloakId,
+              username: assignee.username || "Unknown",
+              firstName: assignee.firstName || "Unknown",
+              lastName: assignee.lastName || "User",
+              avatar: assignee.avatar,
+            })),
+            totalAssignees: reminder.taskId.assigneeIds?.length || 0,
           };
         }
         return reminder;
@@ -493,7 +593,7 @@ exports.getUpcomingReminders = catchAsync(async (req, res) => {
   }
 });
 
-// 🆕 Đánh dấu reminder đã gửi (dùng cho cron job)
+// 🎯 Các hàm khác giữ nguyên (markReminderAsSent, getAllReminders)// 🎯 Đánh dấu reminder đã gửi (dùng cho cron job)
 // PATCH /reminders/mark-sent
 exports.markReminderAsSent = catchAsync(async (req, res) => {
   try {
@@ -537,6 +637,57 @@ exports.markReminderAsSent = catchAsync(async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Lỗi khi đánh dấu reminder đã gửi",
+    });
+  }
+});
+
+// 🎯 Lấy tất cả reminders (cho admin) - VẪN GIỮ NGUYÊN
+// POST /reminders/get-all
+exports.getAllReminders = catchAsync(async (req, res) => {
+  try {
+    const { page = 1, limit = 50, showSent = false } = req.body;
+
+    console.log("🔍 Fetching all reminders:", { page, limit, showSent });
+
+    const skip = (page - 1) * limit;
+
+    // BUILD QUERY
+    const query = { isActive: true };
+    if (!showSent) {
+      query.isSent = false;
+    }
+
+    // LẤY REMINDERS
+    const reminders = await Reminder.find(query)
+      .populate({
+        path: "taskId",
+        select: "title status priority dueDate assignerId assigneeIds",
+      })
+      .sort({ remindAt: 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const totalReminders = await Reminder.countDocuments(query);
+
+    console.log(`✅ Found ${reminders.length} reminders in total`);
+
+    res.status(200).json({
+      status: "success",
+      results: reminders.length,
+      data: reminders,
+      pagination: {
+        page,
+        limit,
+        total: totalReminders,
+        pages: Math.ceil(totalReminders / limit),
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error fetching all reminders:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Lỗi khi lấy danh sách reminders",
     });
   }
 });

@@ -7,6 +7,8 @@ const User = require("../models/user");
 const chatEvents = require("./events/chat");
 const callEvents = require("./events/call");
 const groupChatEvents = require("./events/groupChat");
+const taskHandlersEvents = require("./events/taskHandlers");
+
 const { syncUserFromToken } = require("../utils/auth");
 const {
   handlePinMessage,
@@ -66,6 +68,7 @@ const initSocket = (server) => {
     chatEvents(socket, io);
     callEvents(socket, io);
     groupChatEvents(socket, io);
+    taskHandlersEvents(socket, io);
 
     // 🆕 THÊM: TASK SOCKET EVENTS
     console.log(`🔌 Setting up task socket handlers for user: ${keycloakId}`);

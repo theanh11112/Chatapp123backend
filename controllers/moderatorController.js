@@ -3,7 +3,6 @@ const User = require("../models/user");
 const Room = require("../models/room");
 const Message = require("../models/message");
 
-
 // -------------------- Dashboard --------------------
 exports.getDashboard = (req, res) => {
   res.status(200).json({
@@ -16,7 +15,9 @@ exports.getDashboard = (req, res) => {
 // Lấy tất cả người dùng
 exports.getAllUsers = async (req, res) => {
   try {
-    const users = await User.find().select("firstName lastName email role status");
+    const users = await User.find().select(
+      "firstName lastName email role status"
+    );
     res.status(200).json({ status: "success", data: users });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
@@ -26,7 +27,9 @@ exports.getAllUsers = async (req, res) => {
 // Lấy danh sách người dùng đã được xác thực (status = "active")
 exports.getVerifiedUsers = async (req, res) => {
   try {
-    const users = await User.find({ status: "active" }).select("firstName lastName email role status");
+    const users = await User.find({ status: "active" }).select(
+      "firstName lastName email role status"
+    );
     res.status(200).json({ status: "success", data: users });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
@@ -39,7 +42,9 @@ exports.warnUser = async (req, res) => {
     const { id } = req.params; // lấy id từ URL
     const { reason } = req.body;
     // TODO: logic gửi notification/email thật
-    res.status(200).json({ message: `Đã gửi cảnh báo đến user ${id} với lý do: ${reason}` });
+    res
+      .status(200)
+      .json({ message: `Đã gửi cảnh báo đến user ${id} với lý do: ${reason}` });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
@@ -99,7 +104,9 @@ exports.viewStatistics = async (req, res) => {
     const users = await User.countDocuments();
     const rooms = await Room.countDocuments();
     const messages = await Message.countDocuments();
-    res.status(200).json({ status: "success", data: { users, rooms, messages } });
+    res
+      .status(200)
+      .json({ status: "success", data: { users, rooms, messages } });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }

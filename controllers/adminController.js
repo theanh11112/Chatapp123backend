@@ -14,7 +14,9 @@ exports.getDashboard = (req, res) => {
 // -------------------- 2️⃣ Quản lý người dùng --------------------
 exports.getAllUsers = async (req, res) => {
   try {
-    const users = await User.find().select("username email role status createdAt");
+    const users = await User.find().select(
+      "username email role status createdAt"
+    );
     res.status(200).json({
       status: "success",
       count: users.length,
@@ -37,7 +39,7 @@ exports.assignRole = async (req, res) => {
 
     // Gom tất cả roles thành 1 mảng
     let roles = [];
-    if (role) roles.push(role);          // Nếu gửi role string
+    if (role) roles.push(role); // Nếu gửi role string
     if (rolesArray) roles = roles.concat(rolesArray); // Nếu gửi mảng
 
     const updatedUser = await User.findByIdAndUpdate(
@@ -51,7 +53,9 @@ exports.assignRole = async (req, res) => {
 
     res.status(200).json({
       status: "success",
-      message: `✅ Đã gán role(s) [${roles.join(", ")}] cho user ${updatedUser.username}`,
+      message: `✅ Đã gán role(s) [${roles.join(", ")}] cho user ${
+        updatedUser.username
+      }`,
       data: updatedUser,
     });
   } catch (err) {
@@ -64,7 +68,11 @@ exports.assignRole = async (req, res) => {
 exports.banUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const user = await User.findByIdAndUpdate(id, { status: "banned" }, { new: true });
+    const user = await User.findByIdAndUpdate(
+      id,
+      { status: "banned" },
+      { new: true }
+    );
     if (!user) return res.status(404).json({ message: "Không tìm thấy user." });
 
     res.status(200).json({
@@ -83,7 +91,8 @@ exports.deleteRoom = async (req, res) => {
   try {
     const { roomId } = req.params;
     const room = await Room.findByIdAndDelete(roomId);
-    if (!room) return res.status(404).json({ message: "Không tìm thấy phòng." });
+    if (!room)
+      return res.status(404).json({ message: "Không tìm thấy phòng." });
 
     res.status(200).json({
       status: "success",
@@ -109,7 +118,8 @@ exports.getSystemAnalytics = async (req, res) => {
         roomCount,
         messageCount,
         uptime: process.uptime().toFixed(0) + "s",
-        memoryUsage: (process.memoryUsage().rss / 1024 / 1024).toFixed(2) + " MB",
+        memoryUsage:
+          (process.memoryUsage().rss / 1024 / 1024).toFixed(2) + " MB",
       },
       message: "📊 Thống kê hệ thống được lấy thành công.",
     });

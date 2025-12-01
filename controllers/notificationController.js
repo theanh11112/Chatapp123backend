@@ -199,29 +199,52 @@ exports.getUserNotifications = async (req, res) => {
 };
 
 // Đánh dấu tất cả thông báo là đã đọc
+// controllers/notificationController.js - SỬA HÀM markAllNotificationsAsRead
 exports.markAllNotificationsAsRead = async (req, res) => {
   try {
     const { userId, userRoles = [] } = req.body;
 
-    const filter = {
-      $or: [
-        { recipientType: "all" },
-        { recipientType: "user", recipientIds: userId },
-        {
-          recipientType: "role_based",
-          recipientIds: { $in: userRoles },
-        },
-      ],
-      isRead: false,
-    };
+    console.log("🔄 Mark all as read request:", { userId, userRoles });
+
+    // 🆕 QUAN TRỌNG: Nếu là admin, đánh dấu TẤT CẢ thông báo là đã đọc
+    const isAdmin = userRoles.includes("admin");
+
+    let filter;
+    if (isAdmin) {
+      // Admin: đánh dấu tất cả thông báo trong hệ thống
+      filter = { isRead: false };
+      console.log("👑 Admin marking ALL notifications as read");
+    } else {
+      // User thường: chỉ đánh dấu thông báo của họ
+      filter = {
+        $or: [
+          { recipientType: "all" },
+          { recipientType: "user", recipientIds: userId },
+          {
+            recipientType: "role_based",
+            recipientIds: { $in: userRoles },
+          },
+        ],
+        isRead: false,
+      };
+      console.log("👤 User marking personal notifications as read");
+    }
 
     const result = await Notification.updateMany(filter, { isRead: true });
+
+    console.log("✅ Mark all as read result:", {
+      modifiedCount: result.modifiedCount,
+      isAdmin: isAdmin,
+    });
 
     res.status(200).json({
       status: "success",
       message: `Đã đánh dấu ${result.modifiedCount} thông báo là đã đọc`,
+      modifiedCount: result.modifiedCount,
+      isAdmin: isAdmin,
     });
   } catch (err) {
+    console.error("❌ Error marking all as read:", err);
     res.status(500).json({ status: "error", message: err.message });
   }
 };
@@ -266,6 +289,7 @@ exports.getUnreadNotificationsCount = async (req, res) => {
 // -------------------- Thống kê --------------------
 
 // Thống kê cơ bản thông báo
+// controllers/notificationController.js - THÊM STATS MỞ RỘNG
 exports.getNotificationStats = async (req, res) => {
   try {
     const totalNotifications = await Notification.countDocuments();
@@ -282,12 +306,28 @@ exports.getNotificationStats = async (req, res) => {
     const errorCount = await Notification.countDocuments({ type: "error" });
     const successCount = await Notification.countDocuments({ type: "success" });
 
+    // 🆕 Thống kê theo thời gian
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const todayCount = await Notification.countDocuments({
+      createdAt: { $gte: today },
+    });
+
+    const thisWeek = new Date();
+    thisWeek.setDate(thisWeek.getDate() - 7);
+    const thisWeekCount = await Notification.countDocuments({
+      createdAt: { $gte: thisWeek },
+    });
+
     res.status(200).json({
       status: "success",
       data: {
         total: totalNotifications,
         unread: unreadNotifications,
         read: readNotifications,
+        todayCount,
+        thisWeekCount,
         byType: {
           info: infoCount,
           warning: warningCount,
@@ -300,7 +340,6 @@ exports.getNotificationStats = async (req, res) => {
     res.status(500).json({ status: "error", message: err.message });
   }
 };
-
 // Xem thống kê chi tiết
 exports.getDetailedNotificationStats = async (req, res) => {
   try {

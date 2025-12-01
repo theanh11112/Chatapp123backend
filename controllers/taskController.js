@@ -13,7 +13,7 @@ exports.setSocketIo = (socketIoInstance) => {
 
 /*
 |--------------------------------------------------------------------------
-| TASK MANAGEMENT - 🆕 ĐÃ SỬA CHO KEYCLOAKID
+| TASK MANAGEMENT - 🎯 ĐÃ CẬP NHẬT HỖ TRỢ MULTIPLE ASSIGNEES
 |--------------------------------------------------------------------------
 */
 
@@ -35,31 +35,148 @@ const getUserInfo = async (keycloakId) => {
 };
 
 // 🆕 Helper function để populate multiple tasks
+// 🆕 Helper function để populate multiple tasks - ĐÃ SỬA THEO SCHEMA USER
+// 🆕 Helper function để populate multiple tasks - ĐÃ SỬA
 const populateTasksWithUserInfo = async (tasks) => {
-  return Promise.all(tasks.map((task) => populateTaskWithUserInfo(task)));
-};
+  try {
+    console.log(`🔄 Populating ${tasks.length} tasks with user info...`);
 
-// 🆕 THÊM: Tạo task mới
-// POST /tasks/create
-// 🆕 THÊM: Tạo task mới
+    const populatedTasks = [];
+
+    for (const task of tasks) {
+      const populatedTask = await populateTaskWithUserInfo(task);
+      populatedTasks.push(populatedTask);
+    }
+
+    console.log(`✅ Successfully populated ${populatedTasks.length} tasks`);
+    return populatedTasks;
+  } catch (error) {
+    console.error("❌ Error populating tasks with user info:", error);
+    return tasks; // Return original tasks if error
+  }
+};
+// 🎯 HÀM POPULATE USER INFO - ĐÃ SỬA THEO SCHEMA USER (KHÔNG CÓ firstName, lastName)
+// 🎯 HÀM POPULATE USER INFO - CẦN SỬA LẠI
+async function populateTaskWithUserInfo(task) {
+  try {
+    console.log("🔄 Populating task with user info:", task._id);
+
+    // Tìm thông tin assigner
+    const assigner = await User.findOne({ keycloakId: task.assignerId });
+    console.log("🔍 Assigner found:", assigner?.fullName || assigner?.username);
+
+    // 🆕 QUAN TRỌNG: Tìm thông tin TẤT CẢ assignees
+    let assignees = [];
+    if (task.assigneeIds && task.assigneeIds.length > 0) {
+      assignees = await User.find({ keycloakId: { $in: task.assigneeIds } });
+      console.log("🔍 Assignees found:", assignees.length, "users");
+    }
+
+    // Tạo object task mới với thông tin user đã được populate
+    const populatedTask = {
+      ...task.toObject(),
+      assignerInfo: {
+        keycloakId: task.assignerId,
+        username: assigner?.username || "Unknown User",
+        fullName: assigner?.fullName || "Unknown User",
+        firstName: assigner?.fullName?.split(" ")[0] || "Unknown",
+        lastName: assigner?.fullName?.split(" ").slice(1).join(" ") || "User",
+        avatar: assigner?.avatar,
+      },
+      // 🆕 QUAN TRỌNG: Populate đầy đủ thông tin assignees
+      assigneesInfo: assignees.map((assignee) => ({
+        keycloakId: assignee.keycloakId,
+        username: assignee.username || "Unknown User",
+        fullName: assignee.fullName || "Unknown User",
+        firstName: assignee.fullName?.split(" ")[0] || "Unknown",
+        lastName: assignee.fullName?.split(" ").slice(1).join(" ") || "User",
+        avatar: assignee.avatar,
+      })),
+      totalAssignees: task.assigneeIds?.length || 0,
+    };
+
+    console.log("✅ Task populated with:", {
+      assigner: populatedTask.assignerInfo.fullName,
+      assignees: populatedTask.assigneesInfo.length,
+      totalAssignees: populatedTask.totalAssignees,
+    });
+
+    // Populate activity log
+    if (populatedTask.activityLog && populatedTask.activityLog.length > 0) {
+      const userIds = [
+        ...new Set(populatedTask.activityLog.map((log) => log.userId)),
+      ];
+      const users = await User.find({ keycloakId: { $in: userIds } });
+
+      const userMap = {};
+      users.forEach((user) => {
+        userMap[user.keycloakId] = {
+          username: user.username || "Unknown User",
+          fullName: user.fullName || "Unknown User",
+          firstName: user.fullName?.split(" ")[0] || "Unknown",
+          lastName: user.fullName?.split(" ").slice(1).join(" ") || "User",
+          avatar: user.avatar,
+        };
+      });
+
+      populatedTask.activityLog = populatedTask.activityLog.map((log) => ({
+        ...log,
+        userInfo: userMap[log.userId] || {
+          username: "Unknown User",
+          fullName: "Unknown User",
+          firstName: "Unknown",
+          lastName: "User",
+        },
+      }));
+    }
+
+    return populatedTask;
+  } catch (error) {
+    console.error("❌ Error populating task with user info:", error);
+
+    // Fallback: trả về task với thông tin cơ bản
+    return {
+      ...task.toObject(),
+      assignerInfo: {
+        keycloakId: task.assignerId,
+        username: "Unknown User",
+        fullName: "Unknown User",
+        firstName: "Unknown",
+        lastName: "User",
+        avatar: null,
+      },
+      assigneesInfo: (task.assigneeIds || []).map((assigneeId) => ({
+        keycloakId: assigneeId,
+        username: "Unknown User",
+        fullName: "Unknown User",
+        firstName: "Unknown",
+        lastName: "User",
+        avatar: null,
+      })),
+      totalAssignees: task.assigneeIds?.length || 0,
+    };
+  }
+}
+// 🎯 Tạo task mới - VERSION MỚI: hỗ trợ multiple assignees
 // POST /tasks/create
 exports.createTask = catchAsync(async (req, res) => {
   const {
     title,
     description,
-    assigneeId,
+    assigneeIds, // 🆕 THAY ĐỔI: thành mảng
     priority = "medium",
     dueDate,
     tags = [],
     estimatedHours = 0,
-    reminders,
+    reminders = [],
     assignerId,
   } = req.body;
 
-  console.log("🔍 Debug task creation:", {
-    assigneeId: assigneeId,
-    priority: priority,
-    title: title,
+  console.log("🎯 Creating TASK with multiple assignees:", {
+    title: title?.trim(),
+    assigneeIds, // 🆕 Mảng assigneeIds
+    assignerId,
+    priority,
   });
 
   // VALIDATION
@@ -70,10 +187,11 @@ exports.createTask = catchAsync(async (req, res) => {
     });
   }
 
-  if (!assigneeId) {
+  // 🆕 VALIDATION MỚI: assigneeIds phải là mảng và có ít nhất 1 phần tử
+  if (!Array.isArray(assigneeIds) || assigneeIds.length === 0) {
     return res.status(400).json({
       status: "error",
-      message: "Người nhận task là bắt buộc",
+      message: "assigneeIds phải là mảng và có ít nhất 1 người nhận",
     });
   }
 
@@ -84,19 +202,8 @@ exports.createTask = catchAsync(async (req, res) => {
     });
   }
 
-  console.log("📦 Creating new task:", {
-    title: title.trim(),
-    assigneeId,
-    assignerId: assignerId,
-    priority,
-  });
-
-  // KIỂM TRA USERS TỒN TẠI
-  const [assigner, assignee] = await Promise.all([
-    User.findOne({ keycloakId: assignerId }),
-    User.findOne({ keycloakId: assigneeId }),
-  ]);
-
+  // 🆕 KIỂM TRA TẤT CẢ USERS TỒN TẠI
+  const assigner = await User.findOne({ keycloakId: assignerId });
   if (!assigner) {
     return res.status(404).json({
       status: "error",
@@ -104,10 +211,15 @@ exports.createTask = catchAsync(async (req, res) => {
     });
   }
 
-  if (!assignee) {
+  // Kiểm tra tất cả assignees
+  const assignees = await User.find({ keycloakId: { $in: assigneeIds } });
+  if (assignees.length !== assigneeIds.length) {
+    const foundIds = assignees.map((user) => user.keycloakId);
+    const missingIds = assigneeIds.filter((id) => !foundIds.includes(id));
+
     return res.status(404).json({
       status: "error",
-      message: "Người nhận task không tồn tại",
+      message: `Không tìm thấy người nhận: ${missingIds.join(", ")}`,
     });
   }
 
@@ -120,65 +232,125 @@ exports.createTask = catchAsync(async (req, res) => {
     });
   }
 
-  // TẠO TASK MỚI
-  const newTask = await Task.create({
-    title: title.trim(),
-    description: description?.trim() || "",
-    assignerId: assignerId,
-    assigneeId: assigneeId,
-    priority: priority,
-    dueDate: parsedDueDate,
-    tags: tags,
-    estimatedHours: estimatedHours,
-    activityLog: [
-      {
-        action: "created",
-        userId: assignerId,
-        timestamp: new Date(),
-        details: {
-          from: null,
-          to: "todo",
+  try {
+    // 🎯 TẠO TASK VỚI MULTIPLE ASSIGNEES
+    const newTask = await Task.create({
+      title: title.trim(),
+      description: description?.trim() || "",
+      assignerId: assignerId,
+      assigneeIds: assigneeIds, // 🆕 Mảng assigneeIds
+      priority: priority,
+      dueDate: parsedDueDate,
+      tags: tags,
+      estimatedHours: estimatedHours,
+      activityLog: [
+        {
+          action: "created",
+          userId: assignerId,
+          timestamp: new Date(),
+          details: {
+            from: null,
+            to: "todo",
+            assigneeCount: assigneeIds.length, // 🆕 Ghi số lượng assignees
+          },
         },
-      },
-    ],
-  });
+      ],
+    });
 
-  // THÊM REMINDERS NẾU CÓ
-  if (reminders && reminders.length > 0) {
-    await Reminder.create(
-      reminders.map((reminder) => ({
-        taskId: newTask._id,
-        userId: assignerId,
-        type: reminder.type || "due_date",
-        triggerAt: reminder.triggerAt,
-        isSent: false,
-      }))
+    console.log(
+      "✅ TASK created successfully with",
+      assigneeIds.length,
+      "assignees:",
+      newTask._id
     );
+
+    // 🆕 SỬA: Chỉ tạo reminders nếu có và hợp lệ
+    if (reminders && reminders.length > 0) {
+      try {
+        const reminderPromises = reminders.map(async (reminder) => {
+          if (reminder.remindAt && new Date(reminder.remindAt) > new Date()) {
+            return Reminder.create({
+              taskId: newTask._id,
+              userId: assignerId,
+              title: reminder.title || `Nhắc nhở: ${title}`,
+              description:
+                reminder.description || `Nhắc nhở cho task: ${title}`,
+              remindAt: reminder.remindAt,
+              reminderType: reminder.type || "due_date",
+              recipientIds: assigneeIds, // 🆕 Gửi cho tất cả assignees
+              isSent: false,
+            });
+          }
+        });
+
+        await Promise.all(reminderPromises.filter(Boolean));
+        console.log("✅ Reminders created successfully");
+      } catch (reminderError) {
+        console.error(
+          "⚠️ Error creating reminders, but task was created:",
+          reminderError
+        );
+      }
+    }
+
+    // 🆕 REAL-TIME NOTIFICATION CHO TẤT CẢ ASSIGNEES
+    if (io) {
+      assigneeIds.forEach((assigneeId) => {
+        io.to(`user_${assigneeId}`).emit("task_assigned", {
+          taskId: newTask._id,
+          title: newTask.title,
+          assignerName: `${assigner.firstName} ${assigner.lastName}`,
+          priority: newTask.priority,
+          dueDate: newTask.dueDate,
+          message: `Bạn được giao task mới: ${newTask.title}`,
+          totalAssignees: assigneeIds.length, // 🆕 Thông báo số người cùng nhận
+        });
+      });
+    }
+
+    const populatedTask = await populateTaskWithUserInfo(newTask);
+
+    res.status(201).json({
+      status: "success",
+      message: `Tạo task thành công cho ${assigneeIds.length} người nhận`,
+      data: {
+        task: populatedTask,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error creating task:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Lỗi khi tạo task: " + error.message,
+    });
   }
-
-  console.log("✅ Task created successfully:", newTask._id);
-
-  res.status(201).json({
-    status: "success",
-    data: {
-      task: newTask,
-    },
-  });
 });
 
-// 🆕 THÊM: Lấy danh sách tasks của user
+// 🎯 Lấy danh sách tasks của user - VERSION MỚI
+// POST /tasks/get-user-tasks
+// controllers/taskController.js - CẬP NHẬT PHẦN getUserTasks
+
+// 🎯 Lấy danh sách tasks của user - VERSION MỚI (HỖ TRỢ CẢ ASSIGNER VÀ ASSIGNEE)
 // POST /tasks/get-user-tasks
 exports.getUserTasks = catchAsync(async (req, res) => {
   try {
-    const { keycloakId, status, page = 1, limit = 20 } = req.body;
+    const {
+      keycloakId,
+      status,
+      page = 1,
+      limit = 20,
+      viewType, // 🆕 KHÔNG CÓ GIÁ TRỊ MẶC ĐỊNH - bắt buộc client phải gửi
+    } = req.body;
 
     console.log("🔍 Fetching tasks for user:", {
       keycloakId,
       status,
       page,
       limit,
+      viewType,
     });
 
+    // 🆕 VALIDATION: Kiểm tra các trường bắt buộc
     if (!keycloakId) {
       return res.status(400).json({
         status: "error",
@@ -186,27 +358,60 @@ exports.getUserTasks = catchAsync(async (req, res) => {
       });
     }
 
-    // BUILD QUERY
-    const query = { assigneeId: keycloakId };
-    if (status && status !== "all") {
-      query.status = status;
+    if (!viewType) {
+      return res.status(400).json({
+        status: "error",
+        message:
+          "viewType is required. Use 'assigned' for assigned tasks or 'created' for created tasks",
+      });
+    }
+
+    // 🆕 VALIDATION: Kiểm tra viewType hợp lệ
+    const validViewTypes = ["assigned", "created"];
+    if (!validViewTypes.includes(viewType)) {
+      return res.status(400).json({
+        status: "error",
+        message: `Invalid viewType. Must be one of: ${validViewTypes.join(
+          ", "
+        )}`,
+      });
     }
 
     const skip = (page - 1) * limit;
 
-    // 🆕 SỬA: Lấy tasks không populate, sau đó populate thủ công
+    // 🆕 BUILD QUERY DỰA TRÊN VIEWTYPE ĐƯỢC TRUYỀN VÀO
+    let query = {};
+
+    if (viewType === "created") {
+      // Lấy tasks mà user là người giao (assigner)
+      query = { assignerId: keycloakId };
+      console.log(`📋 Fetching CREATED tasks for assigner: ${keycloakId}`);
+    } else if (viewType === "assigned") {
+      // Lấy tasks mà user là người nhận (assignee)
+      query = { assigneeIds: keycloakId };
+      console.log(`📋 Fetching ASSIGNED tasks for assignee: ${keycloakId}`);
+    }
+
+    // Thêm filter status nếu có
+    if (status && status !== "all") {
+      query.status = status;
+    }
+
+    // Lấy tasks
     const tasks = await Task.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    // 🆕 SỬA: Populate user info cho tất cả tasks
+    // Populate user info cho tất cả tasks
     const populatedTasks = await populateTasksWithUserInfo(tasks);
 
     // LẤY TỔNG SỐ TASKS CHO PAGINATION
     const totalTasks = await Task.countDocuments(query);
 
-    console.log(`✅ Found ${tasks.length} tasks for user: ${keycloakId}`);
+    console.log(
+      `✅ Found ${tasks.length} tasks for user: ${keycloakId} (viewType: ${viewType})`
+    );
 
     res.status(200).json({
       status: "success",
@@ -218,6 +423,7 @@ exports.getUserTasks = catchAsync(async (req, res) => {
         total: totalTasks,
         pages: Math.ceil(totalTasks / limit),
       },
+      viewType: viewType,
     });
   } catch (error) {
     console.error("❌ Error fetching user tasks:", error);
@@ -228,7 +434,10 @@ exports.getUserTasks = catchAsync(async (req, res) => {
   }
 });
 
-// 🆕 THÊM: Cập nhật task
+// 🆕 Hàm mới: Lấy tất cả tasks (cho admin/quản lý)
+// POST /tasks/get-all-tasks
+
+// 🎯 Cập nhật task - VERSION MỚI
 // PATCH /tasks/update
 exports.updateTask = catchAsync(async (req, res) => {
   try {
@@ -252,8 +461,11 @@ exports.updateTask = catchAsync(async (req, res) => {
       });
     }
 
-    // 🆕 SỬA: So sánh trực tiếp keycloakId
-    if (task.assigneeId !== keycloakId && task.assignerId !== keycloakId) {
+    // 🆕 KIỂM TRA QUYỀN: user phải là assigner hoặc assignee
+    const isAuthorized =
+      task.assignerId === keycloakId || task.assigneeIds.includes(keycloakId);
+
+    if (!isAuthorized) {
       return res.status(403).json({
         status: "error",
         message: "Access denied to update this task",
@@ -269,6 +481,32 @@ exports.updateTask = catchAsync(async (req, res) => {
         status: "error",
         message: "Invalid status value",
       });
+    }
+
+    // 🆕 VALIDATION CHO ASSIGNEE IDs UPDATE
+    if (updates.assigneeIds && Array.isArray(updates.assigneeIds)) {
+      if (updates.assigneeIds.length === 0) {
+        return res.status(400).json({
+          status: "error",
+          message: "assigneeIds phải có ít nhất 1 người nhận",
+        });
+      }
+
+      // Kiểm tra tất cả assignees tồn tại
+      const assignees = await User.find({
+        keycloakId: { $in: updates.assigneeIds },
+      });
+      if (assignees.length !== updates.assigneeIds.length) {
+        const foundIds = assignees.map((user) => user.keycloakId);
+        const missingIds = updates.assigneeIds.filter(
+          (id) => !foundIds.includes(id)
+        );
+
+        return res.status(404).json({
+          status: "error",
+          message: `Không tìm thấy người nhận: ${missingIds.join(", ")}`,
+        });
+      }
     }
 
     // THÊM ACTIVITY LOG NẾU CÓ THAY ĐỔI STATUS
@@ -287,6 +525,25 @@ exports.updateTask = catchAsync(async (req, res) => {
       ];
     }
 
+    // THÊM ACTIVITY LOG NẾU CÓ THAY ĐỔI ASSIGNEES
+    if (
+      updates.assigneeIds &&
+      JSON.stringify(updates.assigneeIds) !== JSON.stringify(task.assigneeIds)
+    ) {
+      const activityLog = updates.activityLog || task.activityLog;
+      activityLog.push({
+        action: "assignees_updated",
+        userId: keycloakId,
+        timestamp: new Date(),
+        details: {
+          from: task.assigneeIds,
+          to: updates.assigneeIds,
+          assigneeCount: updates.assigneeIds.length,
+        },
+      });
+      updates.activityLog = activityLog;
+    }
+
     // CẬP NHẬT TASK
     const updatedTask = await Task.findByIdAndUpdate(
       taskId,
@@ -299,17 +556,17 @@ exports.updateTask = catchAsync(async (req, res) => {
 
     console.log("✅ Task updated successfully:", taskId);
 
-    // 🆕 SỬA: Populate user info sau khi update
+    // 🆕 Populate user info sau khi update
     const populatedTask = await populateTaskWithUserInfo(updatedTask);
 
     // REAL-TIME NOTIFICATION CHO ASSIGNER NẾU ASSIGNEE UPDATE
     if (
       io &&
-      keycloakId === task.assigneeId &&
-      task.assignerId !== keycloakId
+      keycloakId !== task.assignerId && // Không phải assigner
+      task.assigneeIds.includes(keycloakId) // Là assignee
     ) {
       const assigner = await User.findOne({ keycloakId: task.assignerId });
-      const assignee = await User.findOne({ keycloakId: task.assigneeId });
+      const assignee = await User.findOne({ keycloakId: keycloakId });
 
       io.to(`user_${task.assignerId}`).emit("task_updated", {
         taskId: taskId,
@@ -320,6 +577,42 @@ exports.updateTask = catchAsync(async (req, res) => {
       });
 
       console.log("📢 Sent update notification to assigner:", task.assignerId);
+    }
+
+    // 🆕 REAL-TIME NOTIFICATION CHO ASSIGNEES NẾU CÓ THAY ĐỔI ASSIGNEES
+    if (updates.assigneeIds && io) {
+      const oldAssignees = task.assigneeIds;
+      const newAssignees = updates.assigneeIds;
+
+      // Thông báo cho assignees mới
+      const addedAssignees = newAssignees.filter(
+        (id) => !oldAssignees.includes(id)
+      );
+      addedAssignees.forEach((assigneeId) => {
+        io.to(`user_${assigneeId}`).emit("task_assigned", {
+          taskId: taskId,
+          title: task.title,
+          assignerName: `${task.assignerInfo?.firstName || "Unknown"} ${
+            task.assignerInfo?.lastName || "User"
+          }`,
+          priority: task.priority,
+          dueDate: task.dueDate,
+          message: `Bạn được giao task mới: ${task.title}`,
+          totalAssignees: newAssignees.length,
+        });
+      });
+
+      // Thông báo cho assignees bị xóa
+      const removedAssignees = oldAssignees.filter(
+        (id) => !newAssignees.includes(id)
+      );
+      removedAssignees.forEach((assigneeId) => {
+        io.to(`user_${assigneeId}`).emit("task_unassigned", {
+          taskId: taskId,
+          title: task.title,
+          message: `Task "${task.title}" đã được giao cho người khác`,
+        });
+      });
     }
 
     res.status(200).json({
@@ -336,7 +629,7 @@ exports.updateTask = catchAsync(async (req, res) => {
   }
 });
 
-// 🆕 THÊM: Lấy chi tiết task
+// 🎯 Lấy chi tiết task - VERSION MỚI
 // POST /tasks/get-detail
 exports.getTaskDetail = catchAsync(async (req, res) => {
   try {
@@ -354,8 +647,6 @@ exports.getTaskDetail = catchAsync(async (req, res) => {
     // KIỂM TRA QUYỀN TRUY CẬP
     const task = await Task.findById(taskId);
 
-    console.log("11111", task);
-
     if (!task) {
       return res.status(404).json({
         status: "error",
@@ -363,15 +654,18 @@ exports.getTaskDetail = catchAsync(async (req, res) => {
       });
     }
 
-    // 🆕 SỬA: So sánh trực tiếp keycloakId
-    if (task.assigneeId !== keycloakId && task.assignerId !== keycloakId) {
+    // 🆕 KIỂM TRA QUYỀN: user phải là assigner hoặc assignee
+    const isAuthorized =
+      task.assignerId === keycloakId || task.assigneeIds.includes(keycloakId);
+
+    if (!isAuthorized) {
       return res.status(403).json({
         status: "error",
         message: "Access denied to view this task",
       });
     }
 
-    // 🆕 SỬA: Populate user info với schema User
+    // 🆕 Populate user info với schema User
     const populatedTask = await populateTaskWithUserInfo(task);
 
     console.log("✅ Task detail fetched successfully:", taskId);
@@ -389,55 +683,7 @@ exports.getTaskDetail = catchAsync(async (req, res) => {
   }
 });
 
-// 🆕 HÀM POPULATE USER INFO - CHỈ LẤY USERNAME
-async function populateTaskWithUserInfo(task) {
-  try {
-    // Tìm thông tin assigner và assignee từ collection User
-    const [assigner, assignee] = await Promise.all([
-      User.findOne({ keycloakId: task.assignerId }),
-      User.findOne({ keycloakId: task.assigneeId }),
-    ]);
-
-    // Tạo object task mới với thông tin user đã được populate
-    const populatedTask = {
-      ...task.toObject(), // Chuyển mongoose document thành plain object
-      assignerId: {
-        keycloakId: task.assignerId,
-        username: assigner?.username || "Unknown User",
-      },
-      assigneeId: {
-        keycloakId: task.assigneeId,
-        username: assignee?.username || "Unknown User",
-      },
-    };
-
-    // 🆕 Populate thông tin user trong activityLog
-    if (populatedTask.activityLog && populatedTask.activityLog.length > 0) {
-      const userIds = [
-        ...new Set(populatedTask.activityLog.map((log) => log.userId)),
-      ];
-      const users = await User.find({ keycloakId: { $in: userIds } });
-
-      const userMap = {};
-      users.forEach((user) => {
-        userMap[user.keycloakId] = user.username || "Unknown User";
-      });
-
-      populatedTask.activityLog = populatedTask.activityLog.map((log) => ({
-        ...log,
-        username: userMap[log.userId] || "Unknown User",
-      }));
-    }
-
-    return populatedTask;
-  } catch (error) {
-    console.error("Error populating task with user info:", error);
-    // Trả về task gốc nếu có lỗi
-    return task.toObject();
-  }
-}
-
-// 🆕 THÊM: Xóa task
+// 🎯 Xóa task - VERSION MỚI
 // POST /tasks/delete
 exports.deleteTask = catchAsync(async (req, res) => {
   try {
@@ -461,7 +707,7 @@ exports.deleteTask = catchAsync(async (req, res) => {
       });
     }
 
-    // 🆕 SỬA: So sánh trực tiếp keycloakId
+    // 🆕 KIỂM TRA QUYỀN: chỉ assigner được xóa
     if (task.assignerId !== keycloakId) {
       return res.status(403).json({
         status: "error",
@@ -477,12 +723,14 @@ exports.deleteTask = catchAsync(async (req, res) => {
 
     console.log("✅ Task deleted successfully:", taskId);
 
-    // REAL-TIME NOTIFICATION CHO ASSIGNEE
+    // 🆕 REAL-TIME NOTIFICATION CHO TẤT CẢ ASSIGNEES
     if (io) {
-      io.to(`user_${task.assigneeId}`).emit("task_deleted", {
-        taskId: taskId,
-        title: task.title,
-        message: `Task "${task.title}" đã bị xóa`,
+      task.assigneeIds.forEach((assigneeId) => {
+        io.to(`user_${assigneeId}`).emit("task_deleted", {
+          taskId: taskId,
+          title: task.title,
+          message: `Task "${task.title}" đã bị xóa`,
+        });
       });
     }
 
@@ -501,11 +749,11 @@ exports.deleteTask = catchAsync(async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| REMINDER MANAGEMENT - 🆕 ĐÃ SỬA CHO KEYCLOAKID
+| REMINDER MANAGEMENT - 🎯 ĐÃ CẬP NHẬT CHO MULTIPLE ASSIGNEES
 |--------------------------------------------------------------------------
 */
 
-// 🆕 THÊM: Tạo reminder mới
+// 🎯 Tạo reminder mới - VERSION MỚI
 // POST /tasks/reminder/create
 exports.createReminder = catchAsync(async (req, res) => {
   try {
@@ -515,6 +763,7 @@ exports.createReminder = catchAsync(async (req, res) => {
       remindAt,
       message,
       reminderType = "custom",
+      recipientIds = [], // 🆕 OPTIONAL: gửi cho nhiều người
     } = req.body;
 
     console.log("⏰ Creating reminder:", { taskId, keycloakId, remindAt });
@@ -535,11 +784,34 @@ exports.createReminder = catchAsync(async (req, res) => {
       });
     }
 
-    // 🆕 SỬA: So sánh trực tiếp keycloakId
-    if (task.assigneeId !== keycloakId && task.assignerId !== keycloakId) {
+    // 🆕 KIỂM TRA QUYỀN: user phải là assigner hoặc assignee
+    const isAuthorized =
+      task.assignerId === keycloakId || task.assigneeIds.includes(keycloakId);
+
+    if (!isAuthorized) {
       return res.status(403).json({
         status: "error",
         message: "Access denied to create reminder for this task",
+      });
+    }
+
+    // 🆕 VALIDATION RECIPIENT IDs
+    const finalRecipientIds =
+      recipientIds.length > 0 ? recipientIds : task.assigneeIds;
+
+    // Kiểm tra tất cả recipients tồn tại
+    const recipients = await User.find({
+      keycloakId: { $in: finalRecipientIds },
+    });
+    if (recipients.length !== finalRecipientIds.length) {
+      const foundIds = recipients.map((user) => user.keycloakId);
+      const missingIds = finalRecipientIds.filter(
+        (id) => !foundIds.includes(id)
+      );
+
+      return res.status(404).json({
+        status: "error",
+        message: `Không tìm thấy người nhận: ${missingIds.join(", ")}`,
       });
     }
 
@@ -559,13 +831,14 @@ exports.createReminder = catchAsync(async (req, res) => {
       remindAt: remindAtDate,
       message: message || `Nhắc nhở task: "${task.title}"`,
       reminderType: reminderType,
+      recipientIds: finalRecipientIds, // 🆕 Mảng recipientIds
     });
 
     console.log("✅ Reminder created successfully:", reminder._id);
 
     res.status(201).json({
       status: "success",
-      message: "Tạo reminder thành công",
+      message: `Tạo reminder thành công (${finalRecipientIds.length} người nhận)`,
       data: reminder,
     });
   } catch (error) {
@@ -577,7 +850,7 @@ exports.createReminder = catchAsync(async (req, res) => {
   }
 });
 
-// 🆕 THÊM: Lấy reminders của user
+// 🎯 Lấy reminders của user - VERSION MỚI
 // POST /tasks/reminders/get-user-reminders
 exports.getUserReminders = catchAsync(async (req, res) => {
   try {
@@ -594,9 +867,9 @@ exports.getUserReminders = catchAsync(async (req, res) => {
 
     const skip = (page - 1) * limit;
 
-    // LẤY REMINDERS SẮP TỚI
+    // 🆕 LẤY REMINDERS MỚI: user là recipient trong mảng recipientIds
     const reminders = await Reminder.find({
-      userId: keycloakId,
+      recipientIds: keycloakId,
       remindAt: { $gte: new Date() },
       isSent: false,
     })
@@ -623,7 +896,7 @@ exports.getUserReminders = catchAsync(async (req, res) => {
     );
 
     const totalReminders = await Reminder.countDocuments({
-      userId: keycloakId,
+      recipientIds: keycloakId,
       remindAt: { $gte: new Date() },
       isSent: false,
     });
@@ -654,21 +927,25 @@ exports.getUserReminders = catchAsync(async (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| SOCKET HANDLERS - 🆕 ĐÃ SỬA CHO KEYCLOAKID
+| SOCKET HANDLERS - 🎯 ĐÃ CẬP NHẬT CHO MULTIPLE ASSIGNEES
 |--------------------------------------------------------------------------
 */
 
-// 🆕 THÊM: Socket handler cho task assignment
+// 🎯 Socket handler cho task assignment - VERSION MỚI
 exports.handleTaskAssignment = catchAsync(async (socket, data) => {
-  const { taskId, assigneeId } = data;
+  const { taskId, assigneeIds } = data; // 🆕 THAY ĐỔI: thành mảng
   const assignerId = socket.userId;
 
-  console.log("📨 Socket task assignment:", { taskId, assigneeId, assignerId });
+  console.log("📨 Socket task assignment:", {
+    taskId,
+    assigneeIds,
+    assignerId,
+  });
 
-  if (!taskId || !assigneeId) {
+  if (!taskId || !assigneeIds || !Array.isArray(assigneeIds)) {
     return socket.emit("task_assignment_response", {
       status: "error",
-      message: "taskId and assigneeId are required",
+      message: "taskId và assigneeIds (mảng) là bắt buộc",
     });
   }
 
@@ -682,7 +959,7 @@ exports.handleTaskAssignment = catchAsync(async (socket, data) => {
       });
     }
 
-    // 🆕 SỬA: So sánh trực tiếp keycloakId
+    // 🆕 KIỂM TRA QUYỀN: chỉ assigner được reassign
     if (task.assignerId !== assignerId) {
       return socket.emit("task_assignment_response", {
         status: "error",
@@ -690,27 +967,28 @@ exports.handleTaskAssignment = catchAsync(async (socket, data) => {
       });
     }
 
-    // KIỂM TRA ASSIGNEE MỚI TỒN TẠI
-    const newAssignee = await User.findOne({ keycloakId: assigneeId });
-    if (!newAssignee) {
+    // KIỂM TRA ASSIGNEES MỚI TỒN TẠI
+    const newAssignees = await User.find({ keycloakId: { $in: assigneeIds } });
+    if (newAssignees.length !== assigneeIds.length) {
       return socket.emit("task_assignment_response", {
         status: "error",
-        message: "New assignee not found",
+        message: "Một số người nhận không tồn tại",
       });
     }
 
-    // LƯU ASSIGNEE CŨ ĐỂ GỬI NOTIFICATION
-    const oldAssigneeId = task.assigneeId;
+    // LƯU ASSIGNEES CŨ ĐỂ GỬI NOTIFICATION
+    const oldAssigneeIds = task.assigneeIds;
 
-    // CẬP NHẬT ASSIGNEE MỚI
-    task.assigneeId = assigneeId;
+    // CẬP NHẬT ASSIGNEES MỚI
+    task.assigneeIds = assigneeIds;
     task.activityLog.push({
       action: "reassigned",
       userId: assignerId,
       timestamp: new Date(),
       details: {
-        from: oldAssigneeId,
-        to: assigneeId,
+        from: oldAssigneeIds,
+        to: assigneeIds,
+        assigneeCount: assigneeIds.length,
       },
     });
 
@@ -721,54 +999,60 @@ exports.handleTaskAssignment = catchAsync(async (socket, data) => {
 
     // REAL-TIME NOTIFICATIONS
     const assigner = await User.findOne({ keycloakId: assignerId });
-    const oldAssignee = await User.findOne({ keycloakId: oldAssigneeId });
 
-    // GỬI CHO ASSIGNEE MỚI
-    socket.to(`user_${assigneeId}`).emit("task_assigned", {
-      taskId: task._id,
-      title: task.title,
-      assignerName: assigner.firstName + " " + assigner.lastName,
-      priority: task.priority,
-      dueDate: task.dueDate,
-      message: `Bạn được giao task mới: ${task.title}`,
+    // GỬI CHO ASSIGNEES MỚI
+    assigneeIds.forEach((assigneeId) => {
+      socket.to(`user_${assigneeId}`).emit("task_assigned", {
+        taskId: task._id,
+        title: task.title,
+        assignerName: assigner.firstName + " " + assigner.lastName,
+        priority: task.priority,
+        dueDate: task.dueDate,
+        message: `Bạn được giao task mới: ${task.title}`,
+        totalAssignees: assigneeIds.length,
+      });
     });
 
-    // GỬI CHO ASSIGNEE CŨ
-    if (oldAssigneeId !== assigneeId) {
-      socket.to(`user_${oldAssigneeId}`).emit("task_unassigned", {
+    // GỬI CHO ASSIGNEES CŨ BỊ XÓA
+    const removedAssignees = oldAssigneeIds.filter(
+      (id) => !assigneeIds.includes(id)
+    );
+    removedAssignees.forEach((assigneeId) => {
+      socket.to(`user_${assigneeId}`).emit("task_unassigned", {
         taskId: task._id,
         title: task.title,
         assignerName: assigner.firstName + " " + assigner.lastName,
         message: `Task "${task.title}" đã được giao cho người khác`,
       });
-    }
+    });
 
     // BROADCAST UPDATE CHO TẤT CẢ CLIENTS ĐANG XEM TASK NÀY
     socket.to(`task_${taskId}`).emit("task_updated", {
       taskId: taskId,
       updates: {
-        assigneeId: assigneeId,
-        assigneeInfo: {
-          keycloakId: newAssignee.keycloakId,
-          username: newAssignee.username,
-          firstName: newAssignee.firstName,
-          lastName: newAssignee.lastName,
-          avatar: newAssignee.avatar,
-        },
+        assigneeIds: assigneeIds,
+        assigneesInfo: newAssignees.map((assignee) => ({
+          keycloakId: assignee.keycloakId,
+          username: assignee.username,
+          firstName: assignee.firstName,
+          lastName: assignee.lastName,
+          avatar: assignee.avatar,
+        })),
+        totalAssignees: assigneeIds.length,
       },
       action: "reassigned",
     });
 
     console.log("✅ Task reassigned successfully via socket:", {
       taskId,
-      from: oldAssigneeId,
-      to: assigneeId,
+      from: oldAssigneeIds,
+      to: assigneeIds,
     });
 
     // RESPONSE CHO NGƯỜI THỰC HIỆN
     socket.emit("task_assignment_response", {
       status: "success",
-      message: "Task assigned successfully",
+      message: `Task assigned successfully to ${assigneeIds.length} people`,
       data: updatedTask,
     });
   } catch (error) {
@@ -780,7 +1064,7 @@ exports.handleTaskAssignment = catchAsync(async (socket, data) => {
   }
 });
 
-// 🆕 THÊM: Socket handler cho task status update
+// 🎯 Socket handler cho task status update - VERSION MỚI
 exports.handleTaskStatusUpdate = catchAsync(async (socket, data) => {
   const { taskId, status, comment } = data;
   const userId = socket.userId;
@@ -804,8 +1088,11 @@ exports.handleTaskStatusUpdate = catchAsync(async (socket, data) => {
       });
     }
 
-    // 🆕 SỬA: So sánh trực tiếp keycloakId
-    if (task.assigneeId !== userId && task.assignerId !== userId) {
+    // 🆕 KIỂM TRA QUYỀN: user phải là assigner hoặc assignee
+    const isAuthorized =
+      task.assignerId === userId || task.assigneeIds.includes(userId);
+
+    if (!isAuthorized) {
       return socket.emit("task_status_update_response", {
         status: "error",
         message: "Access denied to update this task",
@@ -853,7 +1140,6 @@ exports.handleTaskStatusUpdate = catchAsync(async (socket, data) => {
     // REAL-TIME NOTIFICATIONS
     const user = await User.findOne({ keycloakId: userId });
     const assigner = await User.findOne({ keycloakId: task.assignerId });
-    const assignee = await User.findOne({ keycloakId: task.assigneeId });
 
     // STATUS UPDATE MESSAGES
     const statusMessages = {
@@ -866,26 +1152,30 @@ exports.handleTaskStatusUpdate = catchAsync(async (socket, data) => {
     const statusMessage = statusMessages[status] || "đã cập nhật trạng thái";
 
     // GỬI NOTIFICATION CHO ASSIGNER NẾU ASSIGNEE UPDATE
-    if (userId === task.assigneeId && task.assignerId !== userId) {
+    if (task.assigneeIds.includes(userId) && task.assignerId !== userId) {
       socket.to(`user_${task.assignerId}`).emit("task_status_updated", {
         taskId: taskId,
         title: task.title,
-        assigneeName: assignee.firstName + " " + assignee.lastName,
+        assigneeName: user.firstName + " " + user.lastName,
         oldStatus: oldStatus,
         newStatus: status,
-        message: `${assignee.firstName} ${statusMessage} task: ${task.title}`,
+        message: `${user.firstName} ${statusMessage} task: ${task.title}`,
       });
     }
 
-    // GỬI NOTIFICATION CHO ASSIGNEE NẾU ASSIGNER UPDATE
-    if (userId === task.assignerId && task.assigneeId !== userId) {
-      socket.to(`user_${task.assigneeId}`).emit("task_status_updated", {
-        taskId: taskId,
-        title: task.title,
-        assignerName: assigner.firstName + " " + assigner.lastName,
-        oldStatus: oldStatus,
-        newStatus: status,
-        message: `${assigner.firstName} ${statusMessage} task: ${task.title}`,
+    // GỬI NOTIFICATION CHO TẤT CẢ ASSIGNEES NẾU ASSIGNER UPDATE
+    if (userId === task.assignerId) {
+      task.assigneeIds.forEach((assigneeId) => {
+        if (assigneeId !== userId) {
+          socket.to(`user_${assigneeId}`).emit("task_status_updated", {
+            taskId: taskId,
+            title: task.title,
+            assignerName: assigner.firstName + " " + assigner.lastName,
+            oldStatus: oldStatus,
+            newStatus: status,
+            message: `${assigner.firstName} ${statusMessage} task: ${task.title}`,
+          });
+        }
       });
     }
 
@@ -907,19 +1197,26 @@ exports.handleTaskStatusUpdate = catchAsync(async (socket, data) => {
 
     // SPECIAL NOTIFICATION KHI TASK HOÀN THÀNH
     if (status === "done") {
-      socket.to(`user_${task.assignerId}`).emit("task_completed", {
-        taskId: taskId,
-        title: task.title,
-        assigneeName: assignee.firstName + " " + assignee.lastName,
-        completedAt: new Date(),
-        message: `🎉 Task "${task.title}" đã được hoàn thành!`,
-      });
+      // Thông báo cho assigner
+      if (task.assignerId !== userId) {
+        socket.to(`user_${task.assignerId}`).emit("task_completed", {
+          taskId: taskId,
+          title: task.title,
+          completedBy: user.firstName + " " + user.lastName,
+          completedAt: new Date(),
+          message: `🎉 Task "${task.title}" đã được hoàn thành!`,
+        });
+      }
 
-      // CELEBRATION MESSAGE CHO ASSIGNEE
-      socket.to(`user_${task.assigneeId}`).emit("task_completion_congrats", {
-        taskId: taskId,
-        title: task.title,
-        message: `🎉 Chúc mừng! Bạn đã hoàn thành task "${task.title}"!`,
+      // CELEBRATION MESSAGE CHO TẤT CẢ ASSIGNEES
+      task.assigneeIds.forEach((assigneeId) => {
+        if (assigneeId !== userId) {
+          socket.to(`user_${assigneeId}`).emit("task_completion_congrats", {
+            taskId: taskId,
+            title: task.title,
+            message: `🎉 Chúc mừng! Task "${task.title}" đã được hoàn thành!`,
+          });
+        }
       });
     }
 
@@ -945,7 +1242,7 @@ exports.handleTaskStatusUpdate = catchAsync(async (socket, data) => {
   }
 });
 
-// 🆕 THÊM: Socket handler cho join task room (để nhận real-time updates)
+// 🎯 Socket handler cho join task room (để nhận real-time updates)
 exports.handleJoinTaskRoom = catchAsync(async (socket, data) => {
   const { taskId } = data;
   const userId = socket.userId;
@@ -969,8 +1266,11 @@ exports.handleJoinTaskRoom = catchAsync(async (socket, data) => {
       });
     }
 
-    // 🆕 SỬA: So sánh trực tiếp keycloakId
-    if (task.assigneeId !== userId && task.assignerId !== userId) {
+    // 🆕 KIỂM TRA QUYỀN: user phải là assigner hoặc assignee
+    const isAuthorized =
+      task.assignerId === userId || task.assigneeIds.includes(userId);
+
+    if (!isAuthorized) {
       return socket.emit("join_task_room_response", {
         status: "error",
         message: "Access denied to this task",
@@ -996,7 +1296,7 @@ exports.handleJoinTaskRoom = catchAsync(async (socket, data) => {
   }
 });
 
-// 🆕 THÊM: Socket handler cho leave task room
+// 🎯 Socket handler cho leave task room
 exports.handleLeaveTaskRoom = catchAsync(async (socket, data) => {
   const { taskId } = data;
   const userId = socket.userId;
@@ -1030,7 +1330,7 @@ exports.handleLeaveTaskRoom = catchAsync(async (socket, data) => {
   }
 });
 
-// 🆕 THÊM: Socket handler cho task comment
+// 🎯 Socket handler cho task comment - VERSION MỚI
 exports.handleTaskComment = catchAsync(async (socket, data) => {
   const { taskId, comment } = data;
   const userId = socket.userId;
@@ -1054,8 +1354,11 @@ exports.handleTaskComment = catchAsync(async (socket, data) => {
       });
     }
 
-    // 🆕 SỬA: So sánh trực tiếp keycloakId
-    if (task.assigneeId !== userId && task.assignerId !== userId) {
+    // 🆕 KIỂM TRA QUYỀN: user phải là assigner hoặc assignee
+    const isAuthorized =
+      task.assignerId === userId || task.assigneeIds.includes(userId);
+
+    if (!isAuthorized) {
       return socket.emit("task_comment_response", {
         status: "error",
         message: "Access denied to comment on this task",
@@ -1076,26 +1379,35 @@ exports.handleTaskComment = catchAsync(async (socket, data) => {
 
     // LẤY THÔNG TIN USER
     const user = await User.findOne({ keycloakId: userId });
-    const assigner = await User.findOne({ keycloakId: task.assignerId });
-    const assignee = await User.findOne({ keycloakId: task.assigneeId });
 
     // XÁC ĐỊNH NGƯỜI NHẬN NOTIFICATION
-    const notificationTargetId =
-      userId === task.assignerId ? task.assigneeId : task.assignerId;
+    let notificationTargetIds = [];
+    if (userId === task.assignerId) {
+      // Nếu assigner comment, gửi cho tất cả assignees
+      notificationTargetIds = task.assigneeIds.filter((id) => id !== userId);
+    } else {
+      // Nếu assignee comment, gửi cho assigner và các assignees khác
+      notificationTargetIds = [
+        task.assignerId,
+        ...task.assigneeIds.filter((id) => id !== userId),
+      ];
+    }
 
-    // GỬI NOTIFICATION CHO NGƯỜI KIA
-    socket.to(`user_${notificationTargetId}`).emit("task_new_comment", {
-      taskId: taskId,
-      title: task.title,
-      comment: comment.trim(),
-      commentBy: {
-        keycloakId: user.keycloakId,
-        username: user.username,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        avatar: user.avatar,
-      },
-      message: `${user.firstName} đã bình luận trên task: ${task.title}`,
+    // GỬI NOTIFICATION CHO TẤT CẢ NGƯỜI LIÊN QUAN
+    notificationTargetIds.forEach((targetId) => {
+      socket.to(`user_${targetId}`).emit("task_new_comment", {
+        taskId: taskId,
+        title: task.title,
+        comment: comment.trim(),
+        commentBy: {
+          keycloakId: user.keycloakId,
+          username: user.username,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          avatar: user.avatar,
+        },
+        message: `${user.firstName} đã bình luận trên task: ${task.title}`,
+      });
     });
 
     // BROADCAST COMMENT CHO TẤT CẢ CLIENTS ĐANG XEM TASK
@@ -1120,6 +1432,7 @@ exports.handleTaskComment = catchAsync(async (socket, data) => {
       taskId,
       userId,
       commentLength: comment.length,
+      recipients: notificationTargetIds.length,
     });
 
     // RESPONSE CHO NGƯỜI COMMENT

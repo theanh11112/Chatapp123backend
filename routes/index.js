@@ -11,6 +11,8 @@ const notificationRoutes = require("./notificationRoutes");
 const analyticsRoutes = require("./analyticsRoutes");
 const reminderRoutes = require("./reminderRoutes");
 const settingsRoutes = require("./settingsRoutes");
+const reportsRoutes = require("./reportRoutes");
+const taskMessageRoutes = require("./taskMessageRoutes");
 
 module.exports = (keycloak) => {
   const router = express.Router();
@@ -25,8 +27,10 @@ module.exports = (keycloak) => {
   router.use("/task", taskRoutes(keycloak));
   router.use("/notification", notificationRoutes(keycloak));
   router.use("/analytics", analyticsRoutes(keycloak));
-  router.use("/reminders", reminderRoutes(keycloak));
+  router.use("/reminders", reminderRoutes);
   router.use("/settings", settingsRoutes(keycloak));
+  router.use("/reports", reportsRoutes(keycloak));
+  router.use("/taskMessage", taskMessageRoutes);
 
   router.get("/", (req, res) => {
     res.json({ message: "✅ API Server is running with Keycloak" });
