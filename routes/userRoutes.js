@@ -282,7 +282,7 @@ module.exports = (keycloak) => {
     allowUsers,
     userController.endCall
   );
-  router.get(
+  router.post(
     "/call/history",
     keycloak.protect(),
     syncUser,

@@ -64,6 +64,13 @@ const initSocket = (server) => {
 
     console.log(`🔌 Connected: ${keycloakId} (${socket.id})`);
 
+    socket.join(keycloakId);
+    console.log(`🚪 ${username} joined keycloakId room: ${keycloakId}`);
+
+    socket.on("join_keycloak_room", ({ keycloakId }) => {
+      socket.join(keycloakId);
+      console.log(`✅ ${username} manually joined room: ${keycloakId}`);
+    });
     // Gắn sự kiện chat & call SAU KHI connection hoàn tất - ĐÃ SỬA
     chatEvents(socket, io);
     callEvents(socket, io);

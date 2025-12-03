@@ -706,38 +706,98 @@ module.exports = (socket, io) => {
   });
 
   // ---------------- Accept Friend Request ----------------
-  socket.on("accept_request", async ({ request_id }) => {
+  // ---------------- Accept Friend Request ----------------
+  socket.on("accept_request", async ({ request_id, to }) => {
     try {
-      if (!request_id) return;
+      console.log("🎉 Accepting friend request:", { request_id, to });
 
-      const req = await FriendRequest.findById(request_id);
-      if (!req) return;
+      // 🆕 CÓ THỂ DÙNG to (keycloakId) HOẶC request_id
+      let senderId;
 
-      const sender = await User.findOne({ keycloakId: req.sender });
-      const receiver = await User.findOne({ keycloakId: req.recipient });
+      if (request_id) {
+        // Tìm request theo ID
+        const req = await FriendRequest.findById(request_id);
+        if (!req) {
+          console.log("❌ Friend request not found:", request_id);
+          return;
+        }
+        senderId = req.sender;
+      } else if (to) {
+        // Dùng trực tiếp keycloakId
+        senderId = to;
+      } else {
+        console.log("❌ Missing request_id or to parameter");
+        return;
+      }
 
-      if (!sender || !receiver) return;
+      const sender = await User.findOne({ keycloakId: senderId });
+      const receiver = await User.findOne({ keycloakId: currentUserId });
 
-      sender.friends.push(receiver.keycloakId);
-      receiver.friends.push(sender.keycloakId);
+      if (!sender || !receiver) {
+        console.log("❌ Sender or receiver not found");
+        return;
+      }
 
-      await sender.save();
-      await receiver.save();
-      await FriendRequest.findByIdAndDelete(request_id);
+      // Add to friends list
+      if (!sender.friends.includes(currentUserId)) {
+        sender.friends.push(currentUserId);
+      }
+      if (!receiver.friends.includes(senderId)) {
+        receiver.friends.push(senderId);
+      }
 
-      if (sender?.socketId)
-        io.to(sender.socketId).emit("request_accepted", { user: receiver });
+      await Promise.all([sender.save(), receiver.save()]);
 
-      if (receiver?.socketId)
-        io.to(receiver.socketId).emit("request_accepted", { user: sender });
+      // 🔥 SỬA: Emit request_accepted event
+      const acceptedData = {
+        from: currentUserId,
+        to: senderId,
+        message: "Friend request accepted",
+        senderInfo: {
+          keycloakId: receiver.keycloakId,
+          username: receiver.username,
+          avatar: receiver.avatar,
+        },
+        receiverInfo: {
+          keycloakId: sender.keycloakId,
+          username: sender.username,
+          avatar: sender.avatar,
+        },
+        timestamp: new Date(),
+      };
+
+      // Gửi cho cả 2 users
+      console.log("📤 Emitting request_accepted events");
+
+      // Gửi cho người accept
+      socket.emit("request_accepted", acceptedData);
+
+      // Gửi cho người gửi request
+      if (sender?.socketId) {
+        io.to(sender.socketId).emit("request_accepted", acceptedData);
+        console.log(`✅ Sent to sender socket: ${sender.socketId}`);
+      }
+
+      // Cũng gửi qua keycloakId room
+      io.to(senderId).emit("request_accepted", acceptedData);
+
+      // Xóa friend request nếu có request_id
+      if (request_id) {
+        await FriendRequest.findByIdAndDelete(request_id);
+      }
 
       await AuditLog.create({
-        user: receiver.keycloakId,
+        user: currentUserId,
         action: "friend_request_accepted",
-        targetId: sender.keycloakId,
+        targetId: senderId,
+        metadata: { senderId, receiverId: currentUserId },
       });
+
+      console.log(
+        `✅ Friend request accepted: ${currentUserId} <-> ${senderId}`
+      );
     } catch (err) {
-      console.error("Error accept_request:", err);
+      console.error("❌ Error accept_request:", err);
     }
   });
 };
