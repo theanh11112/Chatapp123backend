@@ -36,8 +36,6 @@ module.exports = (keycloak) => {
 
   const allowUsers = requireRole(...["user", "admin", "moderator"]);
   const allowAllSenders = requireRole(...["user", "admin", "moderator", "bot"]);
-
-  // 🆕 THÊM: Chỉ cho phép admin và moderator
   const allowAdminAndModerator = requireRole(...["admin", "moderator"]);
 
   // ====================== PROFILE ======================
@@ -73,7 +71,6 @@ module.exports = (keycloak) => {
     userController.searchUsers
   );
 
-  // 🆕 THÊM: Cập nhật trạng thái user (chỉ admin/moderator)
   router.patch(
     "/update-status",
     keycloak.protect(),
@@ -82,7 +79,6 @@ module.exports = (keycloak) => {
     userController.updateUserStatus
   );
 
-  // 🆕 THÊM: Cập nhật vai trò user (chỉ admin/moderator)
   router.patch(
     "/update-role",
     keycloak.protect(),
@@ -91,7 +87,6 @@ module.exports = (keycloak) => {
     userController.updateUserRole
   );
 
-  // 🆕 THÊM: Cập nhật vai trò user (chỉ admin/moderator)
   router.patch(
     "/remove-role",
     keycloak.protect(),
@@ -133,21 +128,6 @@ module.exports = (keycloak) => {
     userController.sendFriendRequest
   );
 
-  // routes/user.js
-  router.post(
-    "/cancel-friend-request",
-    keycloak.protect(),
-    syncUser,
-    allowUsers,
-    userController.cancelFriendRequest
-  );
-  router.post(
-    "/respond-friend-request",
-    keycloak.protect(),
-    syncUser,
-    allowUsers,
-    userController.respondToFriendRequest
-  );
   router.post(
     "/cancel-friend-request",
     keycloak.protect(),
@@ -156,8 +136,15 @@ module.exports = (keycloak) => {
     userController.cancelFriendRequest
   );
 
+  router.post(
+    "/respond-friend-request",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    userController.respondToFriendRequest
+  );
+
   // ====================== GROUP MANAGEMENT ======================
-  // 🎯 CHỈ ADMIN/MODERATOR MỚI ĐƯỢC TẠO GROUP
   router.post(
     "/group/create",
     keycloak.protect(),
@@ -174,6 +161,7 @@ module.exports = (keycloak) => {
     allowUsers,
     userController.getDirectConversations
   );
+
   router.post(
     "/conversations/direct",
     keycloak.protect(),
@@ -190,6 +178,7 @@ module.exports = (keycloak) => {
     allowUsers,
     userController.getGroupRooms
   );
+
   router.post(
     "/creats/group",
     keycloak.protect(),
@@ -275,6 +264,7 @@ module.exports = (keycloak) => {
     allowUsers,
     userController.createCall
   );
+
   router.patch(
     "/call/end",
     keycloak.protect(),
@@ -282,6 +272,7 @@ module.exports = (keycloak) => {
     allowUsers,
     userController.endCall
   );
+
   router.post(
     "/call/history",
     keycloak.protect(),

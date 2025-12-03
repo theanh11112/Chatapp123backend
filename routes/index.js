@@ -13,6 +13,7 @@ const reminderRoutes = require("./reminderRoutes");
 const settingsRoutes = require("./settingsRoutes");
 const reportsRoutes = require("./reportRoutes");
 const taskMessageRoutes = require("./taskMessageRoutes");
+const e2eeRoutes = require("../routes/e2eeRoutes");
 
 module.exports = (keycloak) => {
   const router = express.Router();
@@ -31,6 +32,7 @@ module.exports = (keycloak) => {
   router.use("/settings", settingsRoutes(keycloak));
   router.use("/reports", reportsRoutes(keycloak));
   router.use("/taskMessage", taskMessageRoutes);
+  router.use("/e2ee", e2eeRoutes);
 
   router.get("/", (req, res) => {
     res.json({ message: "✅ API Server is running with Keycloak" });

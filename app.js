@@ -31,6 +31,7 @@ const reminderRoutes = require("./routes/reminderRoutes");
 const settingsRoutes = require("./routes/settingsRoutes");
 const reportsRoutes = require("./routes/reportRoutes");
 const taskMessageRoutes = require("./routes/taskMessageRoutes");
+const e2eeRoutes = require("./routes/e2eeRoutes");
 
 // KHÔNG IMPORT ZEGO ROUTES NỮA
 
@@ -226,6 +227,7 @@ app.use("/reminders", reminderRoutes);
 app.use("/settings", settingsRoutes);
 app.use("/reports", reportsRoutes(keycloak));
 app.use("/taskMessage", taskMessageRoutes);
+app.use("/e2ee", e2eeRoutes);
 
 // ==================
 // 🏥 Health Check Endpoints

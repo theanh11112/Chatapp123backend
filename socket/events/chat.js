@@ -1,9 +1,16 @@
+// server/sockets/directChat.js
 const User = require("../../models/user");
 const OneToOneMessage = require("../../models/OneToOneMessage");
 const FriendRequest = require("../../models/friendRequest");
 const AuditLog = require("../../models/auditLog");
 const { pushMessage } = require("../../models/OneToOneMessage.helper");
 const { v4: uuidv4 } = require("uuid");
+
+// 🆕 THÊM: Import Message model để đồng bộ với schema mới
+const Message = require("../../models/message");
+// 🆕 THÊM: Import Room model cho E2EE
+const Room = require("../../models/room");
+
 module.exports = (socket, io) => {
   const currentUserId = socket.user?.keycloakId;
   if (!currentUserId)
@@ -12,12 +19,276 @@ module.exports = (socket, io) => {
   const ALLOWED_MSG_TYPES = ["text", "image", "file", "video", "system"];
 
   console.log(
-    "⚙️ Chat events loaded for user:",
+    "⚙️ Direct chat events loaded for user:",
     socket.user.username,
     currentUserId
   );
 
-  // ==================== START CONVERSATION ====================
+  // ==================== E2EE DIRECT MESSAGE FUNCTIONS ====================
+
+  // 🆕 THÊM: Gửi encrypted direct message
+  socket.on("encrypted_direct_message", async (data, callback) => {
+    try {
+      const {
+        to,
+        ciphertext,
+        iv,
+        keyId,
+        algorithm = "AES-GCM-256",
+        keyFingerprint,
+        replyTo,
+      } = data;
+
+      console.log("🔐 Received encrypted_direct_message:", {
+        to,
+        keyFingerprint,
+        ciphertextLength: ciphertext?.length,
+      });
+
+      // VALIDATION
+      if (!to || !ciphertext || !iv) {
+        return callback?.({
+          success: false,
+          error: "Missing required fields: to, ciphertext, iv",
+        });
+      }
+
+      // Kiểm tra người gửi có E2EE enabled không
+      const currentUser = await User.findOne({ keycloakId: currentUserId });
+      if (!currentUser?.e2eeEnabled) {
+        return callback?.({
+          success: false,
+          error: "E2EE is not enabled for your account",
+        });
+      }
+
+      // Kiểm tra người nhận có E2EE enabled không
+      const recipient = await User.findOne({ keycloakId: to });
+      if (!recipient?.e2eeEnabled) {
+        return callback?.({
+          success: false,
+          error: "Recipient does not have E2EE enabled",
+        });
+      }
+
+      // Tìm hoặc tạo room cho direct chat
+      const room = await Room.findOne({
+        isGroup: false,
+        members: { $all: [currentUserId, to] },
+      });
+
+      let roomId;
+
+      if (!room) {
+        // Tạo room mới
+        const newRoom = await Room.create({
+          name: null,
+          isGroup: false,
+          members: [currentUserId, to],
+          createdBy: currentUserId,
+        });
+        roomId = newRoom._id;
+        console.log("✅ Created new room for direct chat:", roomId);
+      } else {
+        roomId = room._id;
+        console.log("✅ Found existing room:", roomId);
+      }
+
+      // Tạo sender object đầy đủ
+      const senderData = {
+        id: currentUserId,
+        name: socket.user?.username || "Unknown",
+        avatar: socket.user?.avatar || null,
+      };
+
+      // Tạo encrypted message trong Message collection
+      const newMessage = await Message.create({
+        room: roomId,
+        content: ciphertext,
+        type: "encrypted",
+        sender: senderData,
+        isEncrypted: true,
+        encryptionData: {
+          ciphertext: ciphertext,
+          iv: iv,
+          keyId: keyId || null,
+          keyFingerprint: keyFingerprint,
+          algorithm: algorithm,
+        },
+        replyTo: replyTo || null,
+      });
+
+      // Cập nhật lastMessage cho room
+      await Room.findByIdAndUpdate(roomId, {
+        lastMessage: newMessage._id,
+        updatedAt: new Date(),
+      });
+
+      console.log("✅ Encrypted direct message saved to DB:", newMessage._id);
+
+      // Chuẩn bị message data để gửi realtime
+      const messageForClients = {
+        _id: newMessage._id,
+        id: newMessage._id.toString(),
+        content: newMessage.content,
+        type: "encrypted",
+        sender: {
+          id: currentUserId,
+          name: socket.user?.username || "Unknown",
+          avatar: socket.user?.avatar || null,
+        },
+        room: roomId,
+        isEncrypted: true,
+        encryptionData: newMessage.encryptionData,
+        createdAt: newMessage.createdAt,
+        updatedAt: newMessage.updatedAt,
+        replyTo: replyTo || null,
+      };
+
+      console.log("📤 Sending encrypted message to recipient:", to);
+
+      // Gửi encrypted message cho người nhận
+      if (recipient?.socketId) {
+        io.to(recipient.socketId).emit("new_encrypted_message", {
+          from: currentUserId,
+          message: messageForClients,
+          incoming: true,
+          outgoing: false,
+        });
+      }
+
+      // Gửi lại cho sender để confirm
+      socket.emit("new_encrypted_message", {
+        from: currentUserId,
+        message: messageForClients,
+        incoming: false,
+        outgoing: true,
+      });
+
+      console.log("✅ Encrypted direct message sent successfully");
+
+      // Response success
+      callback?.({
+        success: true,
+        message: "Encrypted direct message sent successfully",
+        data: messageForClients,
+      });
+
+      // Lưu audit log
+      await AuditLog.create({
+        user: currentUserId,
+        action: "send_encrypted_direct_message",
+        targetId: to,
+        metadata: {
+          keyFingerprint,
+          algorithm,
+          messageId: newMessage._id,
+        },
+      });
+    } catch (err) {
+      console.error("❌ Error encrypted_direct_message:", err);
+      callback?.({
+        success: false,
+        error: err.message,
+      });
+    }
+  });
+
+  // 🆕 THÊM: Get E2EE public key của bạn bè
+  socket.on("get_friend_e2ee_key", async ({ friendId }, callback) => {
+    try {
+      console.log("🔑 Getting E2EE public key for friend:", friendId);
+
+      if (!friendId) {
+        return callback?.({
+          success: false,
+          error: "friendId is required",
+        });
+      }
+
+      // Kiểm tra có phải bạn bè không
+      const currentUser = await User.findOne({ keycloakId: currentUserId });
+      if (!currentUser.friends.includes(friendId)) {
+        return callback?.({
+          success: false,
+          error: "User is not your friend",
+        });
+      }
+
+      const friend = await User.findOne({ keycloakId: friendId });
+      if (!friend) {
+        return callback?.({
+          success: false,
+          error: "Friend not found",
+        });
+      }
+
+      if (!friend.e2eeEnabled) {
+        return callback?.({
+          success: false,
+          error: "Friend does not have E2EE enabled",
+        });
+      }
+
+      // Lấy current active key
+      const currentKey = friend.e2eeKeys?.find(
+        (key) => key.fingerprint === friend.currentKeyId && key.isActive
+      );
+
+      if (!currentKey) {
+        return callback?.({
+          success: false,
+          error: "Friend does not have an active E2EE key",
+        });
+      }
+
+      callback?.({
+        success: true,
+        data: {
+          keycloakId: friend.keycloakId,
+          username: friend.username,
+          publicKey: currentKey.publicKey,
+          keyType: currentKey.keyType,
+          fingerprint: currentKey.fingerprint,
+          createdAt: currentKey.createdAt,
+          e2eeEnabled: friend.e2eeEnabled,
+        },
+      });
+    } catch (err) {
+      console.error("❌ Error get_friend_e2ee_key:", err);
+      callback?.({
+        success: false,
+        error: err.message,
+      });
+    }
+  });
+
+  // 🆕 THÊM: Helper function để kiểm tra E2EE access
+  const checkE2EEAccess = async (userId, targetUserId) => {
+    try {
+      if (userId === targetUserId) return true;
+
+      const user = await User.findOne({ keycloakId: userId });
+      if (user && user.friends && user.friends.includes(targetUserId)) {
+        return true;
+      }
+
+      const Room = require("../../models/room");
+      const sharedRooms = await Room.find({
+        isGroup: true,
+        members: { $all: [userId, targetUserId] },
+      }).limit(1);
+
+      return sharedRooms.length > 0;
+    } catch (error) {
+      console.error("❌ Error checking E2EE access:", error);
+      return false;
+    }
+  };
+
+  // ==================== DIRECT CHAT SPECIFIC EVENTS ====================
+
+  // ---------------- Start Conversation ----------------
   socket.on("start_conversation", async (data, callback) => {
     try {
       const { to, from } = data;
@@ -72,7 +343,7 @@ module.exports = (socket, io) => {
       const participantsInfo = await Promise.all(
         conversation.participants.map(async (participantId) => {
           const user = await User.findOne({ keycloakId: participantId }).select(
-            "keycloakId username fullName avatar status lastSeen email"
+            "keycloakId username fullName avatar status lastSeen email e2eeEnabled"
           );
           return user;
         })
@@ -133,6 +404,7 @@ module.exports = (socket, io) => {
       callback?.({ success: false, error: errorMsg });
     }
   });
+
   // ---------------- Get Direct Conversations ----------------
   socket.on("get_direct_conversations", async ({ keycloakId }, callback) => {
     try {
@@ -151,7 +423,9 @@ module.exports = (socket, io) => {
       // 3) Lấy thông tin user
       const users = await User.find({
         keycloakId: { $in: allUserIds },
-      }).select("username email keycloakId avatar socketId status lastSeen");
+      }).select(
+        "username email keycloakId avatar socketId status lastSeen e2eeEnabled"
+      );
 
       // 4) Map userId → thông tin user
       const userMap = {};
@@ -163,6 +437,7 @@ module.exports = (socket, io) => {
           avatar: u.avatar,
           status: u.status || "Offline",
           lastSeen: u.lastSeen || null,
+          e2eeEnabled: u.e2eeEnabled || false,
         };
       });
 
@@ -197,7 +472,6 @@ module.exports = (socket, io) => {
   });
 
   // ---------------- Send Message ----------------
-  // ---------------- Send Message ----------------
   socket.on(
     "text_message",
     async ({ id, conversation_id, to, message, type }, callback) => {
@@ -217,7 +491,7 @@ module.exports = (socket, io) => {
 
         // Tạo message object
         const newMessage = {
-          _id: id || undefined,
+          _id: id || uuidv4(),
           from: currentUserId,
           to: toId,
           type: msgType,
@@ -230,7 +504,7 @@ module.exports = (socket, io) => {
         // Dùng pushMessage
         const chat = await pushMessage([currentUserId, toId], newMessage);
 
-        // 🆕 SỬA QUAN TRỌNG: Tạo message object đầy đủ với đúng structure
+        // Tạo message data để gửi realtime
         const messageData = {
           _id: newMessage._id,
           id: newMessage._id,
@@ -240,12 +514,12 @@ module.exports = (socket, io) => {
           subtype: msgType,
           from: currentUserId,
           to: toId,
-          conversation_id: chat._id.toString(), // 🆕 THÊM conversation_id
+          conversation_id: chat._id.toString(),
           time: new Date().toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
           }),
-          createdAt: new Date(),
+          createdAt: newMessage.createdAt,
           incoming: false,
           outgoing: true,
           attachments: [],
@@ -263,33 +537,21 @@ module.exports = (socket, io) => {
           to: toId,
         });
 
-        // 🆕 SỬA: Gửi event "text_message" thay vì "new_message"
+        // Gửi event "text_message"
         const toUser = await User.findOne({ keycloakId: toId });
 
         if (toUser?.socketId) {
           console.log("🚀 Emitting text_message to receiver:", toUser.socketId);
-          io.to(toUser.socketId).emit("text_message", messageData);
+          io.to(toUser.socketId).emit("text_message", {
+            ...messageData,
+            incoming: true,
+            outgoing: false,
+          });
         }
 
         // Gửi lại cho sender để confirm
         console.log("🚀 Emitting text_message to sender:", socket.id);
-        socket.emit("text_message", {
-          ...messageData,
-          incoming: false,
-          outgoing: true,
-        });
-
-        // 🆕 THÊM: Gửi cả event "new_message" để tương thích ngược (nếu cần)
-        if (toUser?.socketId) {
-          io.to(toUser.socketId).emit("new_message", {
-            conversation_id: chat._id,
-            message: messageData,
-          });
-        }
-        socket.emit("new_message", {
-          conversation_id: chat._id,
-          message: messageData,
-        });
+        socket.emit("text_message", messageData);
 
         // Lưu audit log
         await AuditLog.create({
@@ -307,7 +569,7 @@ module.exports = (socket, io) => {
     }
   );
 
-  // server/sockets/directChat.js - THÊM PHẦN NÀY
+  // ---------------- Send Reply Message ----------------
   socket.on("text_message_reply", async (data, callback) => {
     try {
       console.log("📨 Received text_message_reply:", data);
@@ -360,7 +622,7 @@ module.exports = (socket, io) => {
 
       console.log("✅ Direct reply message saved to DB:", newMessage._id);
 
-      // 🆕 SỬA: Tạo message data đầy đủ với đúng structure
+      // Tạo message data
       const messageData = {
         _id: newMessage._id,
         id: newMessage._id.toString(),
@@ -370,7 +632,7 @@ module.exports = (socket, io) => {
         subtype: "reply",
         from: from,
         to: to,
-        conversation_id: conversation_id, // 🆕 THÊM conversation_id
+        conversation_id: conversation_id,
         time: new Date().toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",
@@ -399,15 +661,20 @@ module.exports = (socket, io) => {
         is_reply: true,
       });
 
-      // 🆕 SỬA: Gửi event "text_message_reply" và "text_message"
+      // Gửi event cho receiver
       const toUser = await User.findOne({ keycloakId: to });
+      if (toUser?.socketId) {
+        io.to(toUser.socketId).emit("text_message_reply", {
+          ...messageData,
+          incoming: true,
+          outgoing: false,
+        });
+      }
 
-      // Gửi event chính cho cả sender và receiver
-      io.to(toUser.socketId).emit("text_message_reply", messageData);
+      // Gửi lại cho sender
+      socket.emit("text_message_reply", messageData);
 
-      console.log(
-        "✅ Direct reply message sent successfully via multiple events"
-      );
+      console.log("✅ Direct reply message sent successfully");
 
       callback?.({
         success: true,
@@ -422,6 +689,7 @@ module.exports = (socket, io) => {
       });
     }
   });
+
   // ---------------- Delete Direct Message ----------------
   socket.on(
     "delete_direct_message",
@@ -432,7 +700,7 @@ module.exports = (socket, io) => {
           keycloakId,
         });
 
-        // 🆕 VALIDATION
+        // VALIDATION
         if (!messageId || !keycloakId) {
           return callback?.({
             status: "fail",
@@ -440,7 +708,7 @@ module.exports = (socket, io) => {
           });
         }
 
-        // 🆕 TÌM USER THEO keycloakId
+        // TÌM USER THEO keycloakId
         const user = await User.findOne({ keycloakId });
         if (!user) {
           return callback?.({
@@ -449,7 +717,7 @@ module.exports = (socket, io) => {
           });
         }
 
-        // 🆕 QUAN TRỌNG: TÌM TRONG OneToOneMessage (direct messages)
+        // TÌM TRONG OneToOneMessage (direct messages)
         console.log("🔍 Searching for message in OneToOneMessage...");
 
         // Tìm conversation có chứa message này
@@ -481,7 +749,7 @@ module.exports = (socket, io) => {
           isOwner: message.from === keycloakId,
         });
 
-        // 🆕 BẢO MẬT: Kiểm tra user có phải là người gửi tin nhắn không
+        // BẢO MẬT: Kiểm tra user có phải là người gửi tin nhắn không
         if (message.from !== keycloakId) {
           console.log("🚫 Unauthorized delete attempt - Direct Message:", {
             attacker: keycloakId,
@@ -496,7 +764,7 @@ module.exports = (socket, io) => {
           });
         }
 
-        // 🆕 BẢO MẬT: Kiểm tra user có trong conversation không
+        // BẢO MẬT: Kiểm tra user có trong conversation không
         if (!conversation.participants.includes(keycloakId)) {
           console.log("🚫 User not in conversation:", {
             user: keycloakId,
@@ -509,7 +777,7 @@ module.exports = (socket, io) => {
           });
         }
 
-        // 🗑️ XÓA TIN NHẮN TỪ OneToOneMessage
+        // XÓA TIN NHẮN TỪ OneToOneMessage
         await OneToOneMessage.updateOne(
           { _id: conversation._id },
           { $pull: { messages: { _id: messageId } } }
@@ -521,7 +789,7 @@ module.exports = (socket, io) => {
           conversationId: conversation._id,
         });
 
-        // 📡 TÌM SOCKET ID CỦA NGƯỜI CÒN LẠI TRONG CONVERSATION
+        // TÌM SOCKET ID CỦA NGƯỜI CÒN LẠI
         const otherParticipant = conversation.participants.find(
           (participant) => participant !== keycloakId
         );
@@ -531,7 +799,7 @@ module.exports = (socket, io) => {
           otherParticipant
         );
 
-        // Tìm socket ID của người còn lại từ database
+        // Tìm socket ID của người còn lại
         let otherParticipantSocketId = null;
         const otherUser = await User.findOne({ keycloakId: otherParticipant });
 
@@ -546,7 +814,7 @@ module.exports = (socket, io) => {
           );
         }
 
-        // 📡 EMIT SOCKET đến cả 2 users
+        // EMIT SOCKET đến cả 2 users
         const socketData = {
           messageId: messageId,
           conversationId: conversation._id,
@@ -594,6 +862,7 @@ module.exports = (socket, io) => {
     if (roomId)
       socket.to(roomId).emit("typing_start", { userId: currentUserId });
   });
+
   socket.on("typing_stop", ({ roomId }) => {
     if (roomId)
       socket.to(roomId).emit("typing_stop", { userId: currentUserId });
@@ -632,7 +901,9 @@ module.exports = (socket, io) => {
       // Populate participants info
       const users = await User.find({
         keycloakId: { $in: conversation.participants },
-      }).select("username email keycloakId avatar socketId status lastSeen");
+      }).select(
+        "username email keycloakId avatar socketId status lastSeen e2eeEnabled"
+      );
 
       const mapUsers = users.reduce((acc, user) => {
         acc[user.keycloakId] = {
@@ -642,6 +913,7 @@ module.exports = (socket, io) => {
           email: user.email,
           status: user.status || "Offline",
           lastSeen: user.lastSeen || null,
+          e2eeEnabled: user.e2eeEnabled || false,
         };
         return acc;
       }, {});
@@ -706,12 +978,11 @@ module.exports = (socket, io) => {
   });
 
   // ---------------- Accept Friend Request ----------------
-  // ---------------- Accept Friend Request ----------------
   socket.on("accept_request", async ({ request_id, to }) => {
     try {
       console.log("🎉 Accepting friend request:", { request_id, to });
 
-      // 🆕 CÓ THỂ DÙNG to (keycloakId) HOẶC request_id
+      // CÓ THỂ DÙNG to (keycloakId) HOẶC request_id
       let senderId;
 
       if (request_id) {
@@ -748,7 +1019,7 @@ module.exports = (socket, io) => {
 
       await Promise.all([sender.save(), receiver.save()]);
 
-      // 🔥 SỬA: Emit request_accepted event
+      // Emit request_accepted event
       const acceptedData = {
         from: currentUserId,
         to: senderId,
@@ -757,11 +1028,13 @@ module.exports = (socket, io) => {
           keycloakId: receiver.keycloakId,
           username: receiver.username,
           avatar: receiver.avatar,
+          e2eeEnabled: receiver.e2eeEnabled || false,
         },
         receiverInfo: {
           keycloakId: sender.keycloakId,
           username: sender.username,
           avatar: sender.avatar,
+          e2eeEnabled: sender.e2eeEnabled || false,
         },
         timestamp: new Date(),
       };
