@@ -1,4 +1,4 @@
-// controllers/e2eeController.js
+// controllers/e2eeController.js - HOÀN CHỈNH VERSION
 const crypto = require("crypto");
 const User = require("../models/user");
 const Message = require("../models/message");
@@ -49,15 +49,54 @@ const checkE2EEAccess = async (userId, targetUserId) => {
   }
 };
 
-/*
-|--------------------------------------------------------------------------
-| E2EE PUBLIC KEY MANAGEMENT
-|--------------------------------------------------------------------------
-*/
+// Thêm hàm này để kiểm tra quyền truy cập room
+// controllers/e2eeController.js - SỬA LẠI HOÀN TOÀN
+const checkRoomAccess = async (keycloakId, roomId) => {
+  try {
+    console.log(
+      `🔍 [checkRoomAccess] Checking access for keycloakId: ${keycloakId} to room: ${roomId}`
+    );
 
-// Cập nhật E2EE public key cho user
+    // KHÔNG CẦN TÌM USER - trực tiếp tìm room với keycloakId
+    const room = await Room.findOne({
+      _id: roomId,
+      members: keycloakId, // So sánh trực tiếp với keycloakId
+    });
+
+    if (room) {
+      console.log(
+        `✅ [checkRoomAccess] Access GRANTED for ${keycloakId} to room ${roomId}`
+      );
+      console.log(
+        `   Room name: ${room.name}, Members count: ${room.members.length}`
+      );
+      return true;
+    } else {
+      console.log(
+        `❌ [checkRoomAccess] Access DENIED for ${keycloakId} to room ${roomId}`
+      );
+
+      // Debug: Kiểm tra room có tồn tại không
+      const roomExists = await Room.findById(roomId);
+      if (roomExists) {
+        console.log(`ℹ️  Room exists but ${keycloakId} not in members`);
+        console.log(`   Room members: ${JSON.stringify(roomExists.members)}`);
+      } else {
+        console.log(`ℹ️  Room does not exist: ${roomId}`);
+      }
+      return false;
+    }
+  } catch (error) {
+    console.error("❌ [checkRoomAccess] Error:", error.message);
+    return false;
+  }
+};
+
+// ==================== CONTROLLER FUNCTIONS ====================
+
+// 1. Cập nhật E2EE public key cho user
 // POST /users/e2ee/update-key
-exports.updateE2EEPublicKey = catchAsync(async (req, res) => {
+const updateE2EEPublicKey = catchAsync(async (req, res) => {
   try {
     const { publicKey, keyType = "ecdh" } = req.body;
     const currentUserId = req.user?.keycloakId;
@@ -165,9 +204,9 @@ exports.updateE2EEPublicKey = catchAsync(async (req, res) => {
   }
 });
 
-// Lấy E2EE public key của một user
+// 2. Lấy E2EE public key của một user
 // POST /users/e2ee/public-key
-exports.getUserE2EEPublicKey = catchAsync(async (req, res) => {
+const getUserE2EEPublicKey = catchAsync(async (req, res) => {
   try {
     const { userId } = req.body;
     const currentUserId = req.user?.keycloakId;
@@ -244,9 +283,9 @@ exports.getUserE2EEPublicKey = catchAsync(async (req, res) => {
   }
 });
 
-// Lấy tất cả E2EE keys của user
+// 3. Lấy tất cả E2EE keys của user
 // GET /users/e2ee/my-keys
-exports.getAllMyE2EEKeys = catchAsync(async (req, res) => {
+const getAllMyE2EEKeys = catchAsync(async (req, res) => {
   try {
     const currentUserId = req.user?.keycloakId;
 
@@ -284,9 +323,9 @@ exports.getAllMyE2EEKeys = catchAsync(async (req, res) => {
   }
 });
 
-// Khởi tạo E2EE key exchange với một user
+// 4. Khởi tạo E2EE key exchange với một user
 // POST /users/e2ee/initiate-exchange
-exports.initiateE2EEKeyExchange = catchAsync(async (req, res) => {
+const initiateE2EEKeyExchange = catchAsync(async (req, res) => {
   try {
     const { peerId } = req.body;
     const currentUserId = req.user?.keycloakId;
@@ -368,9 +407,9 @@ exports.initiateE2EEKeyExchange = catchAsync(async (req, res) => {
   }
 });
 
-// Xác nhận E2EE key exchange
+// 5. Xác nhận E2EE key exchange
 // POST /users/e2ee/confirm-exchange
-exports.confirmE2EEKeyExchange = catchAsync(async (req, res) => {
+const confirmE2EEKeyExchange = catchAsync(async (req, res) => {
   try {
     const {
       exchangeId,
@@ -459,9 +498,9 @@ exports.confirmE2EEKeyExchange = catchAsync(async (req, res) => {
   }
 });
 
-// Lấy E2EE thông tin của user
+// 6. Lấy E2EE thông tin của user
 // GET /users/e2ee/info
-exports.getE2EEInfo = catchAsync(async (req, res) => {
+const getE2EEInfo = catchAsync(async (req, res) => {
   try {
     const currentUserId = req.user?.keycloakId;
 
@@ -508,23 +547,16 @@ exports.getE2EEInfo = catchAsync(async (req, res) => {
   }
 });
 
-// Enable/disable E2EE
+// 7. Enable/disable E2EE
 // PATCH /users/e2ee/toggle
-exports.toggleE2EE = catchAsync(async (req, res) => {
+const toggleE2EE = async (req, res) => {
   try {
+    const { keycloakId } = req.user;
     const { enabled } = req.body;
-    const currentUserId = req.user?.keycloakId;
 
-    console.log("🔄 Toggling E2EE:", { userId: currentUserId, enabled });
+    console.log(`🔧 [toggleE2EE] User ${keycloakId}, enabled: ${enabled}`);
 
-    if (typeof enabled !== "boolean") {
-      return res.status(400).json({
-        status: "error",
-        message: "enabled (boolean) is required",
-      });
-    }
-
-    const user = await User.findOne({ keycloakId: currentUserId });
+    const user = await User.findOne({ keycloakId });
     if (!user) {
       return res.status(404).json({
         status: "error",
@@ -532,55 +564,36 @@ exports.toggleE2EE = catchAsync(async (req, res) => {
       });
     }
 
-    // Nếu enable nhưng không có active key
-    if (enabled && !user.currentKeyId) {
-      return res.status(400).json({
-        status: "error",
-        message:
-          "Cannot enable E2EE without an active key. Please update your public key first.",
-      });
-    }
-
     user.e2eeEnabled = enabled;
+    user.updatedAt = new Date();
+
     await user.save();
 
-    console.log("✅ E2EE toggled:", {
-      userId: currentUserId,
-      enabled: user.e2eeEnabled,
-    });
+    console.log(
+      `✅ [toggleE2EE] Updated user ${keycloakId} e2eeEnabled to ${enabled}`
+    );
 
-    // Notify friends about E2EE status change
-    if (user.friends && user.friends.length > 0 && req.app.get("io")) {
-      const io = req.app.get("io");
-      user.friends.forEach((friendKeycloakId) => {
-        io.to(friendKeycloakId).emit("friend_e2ee_status_changed", {
-          userId: currentUserId,
-          username: user.username,
-          e2eeEnabled: enabled,
-          timestamp: new Date(),
-        });
-      });
-    }
-
-    res.status(200).json({
+    return res.status(200).json({
       status: "success",
       message: `E2EE ${enabled ? "enabled" : "disabled"} successfully`,
       data: {
         e2eeEnabled: user.e2eeEnabled,
+        updatedAt: user.updatedAt,
       },
     });
   } catch (error) {
-    console.error("❌ Error toggling E2EE:", error);
-    res.status(500).json({
+    console.error("❌ [toggleE2EE] Error:", error);
+    return res.status(500).json({
       status: "error",
       message: "Failed to toggle E2EE",
+      error: error.message,
     });
   }
-});
+};
 
-// Xóa một key cụ thể
+// 8. Xóa một key cụ thể
 // POST /users/e2ee/delete-key
-exports.deleteE2EEKey = catchAsync(async (req, res) => {
+const deleteE2EEKey = catchAsync(async (req, res) => {
   try {
     const { fingerprint } = req.body;
     const currentUserId = req.user?.keycloakId;
@@ -644,9 +657,9 @@ exports.deleteE2EEKey = catchAsync(async (req, res) => {
   }
 });
 
-// Đặt một key làm active
+// 9. Đặt một key làm active
 // POST /users/e2ee/set-active-key
-exports.setActiveE2EEKey = catchAsync(async (req, res) => {
+const setActiveE2EEKey = catchAsync(async (req, res) => {
   try {
     const { fingerprint } = req.body;
     const currentUserId = req.user?.keycloakId;
@@ -724,9 +737,9 @@ exports.setActiveE2EEKey = catchAsync(async (req, res) => {
   }
 });
 
-// Kiểm tra E2EE status của user
+// 10. Kiểm tra E2EE status của user
 // POST /users/e2ee/check-status
-exports.checkE2EEStatus = catchAsync(async (req, res) => {
+const checkE2EEStatus = catchAsync(async (req, res) => {
   try {
     const { userId } = req.body;
     const currentUserId = req.user?.keycloakId;
@@ -784,9 +797,8 @@ exports.checkE2EEStatus = catchAsync(async (req, res) => {
   }
 });
 
-// Gửi encrypted message
-// POST /users/message/encrypted
-exports.sendEncryptedMessage = catchAsync(async (req, res) => {
+// 11. Gửi encrypted message - ĐÃ SỬA VỚI CHECK ROOM ACCESS
+const sendEncryptedMessage = catchAsync(async (req, res) => {
   try {
     const {
       roomId,
@@ -838,16 +850,21 @@ exports.sendEncryptedMessage = catchAsync(async (req, res) => {
       });
     }
 
-    // Kiểm tra room access
-    const room = await Room.findOne({
-      _id: roomId,
-      members: currentUserId,
-    });
-
-    if (!room) {
+    // KIỂM TRA QUYỀN TRUY CẬP ROOM
+    const hasRoomAccess = await checkRoomAccess(currentUserId, roomId);
+    if (!hasRoomAccess) {
       return res.status(403).json({
         status: "error",
         message: "Access denied to this room",
+      });
+    }
+
+    // Tìm room để lấy thông tin
+    const room = await Room.findById(roomId);
+    if (!room) {
+      return res.status(404).json({
+        status: "error",
+        message: "Room not found",
       });
     }
 
@@ -895,9 +912,10 @@ exports.sendEncryptedMessage = catchAsync(async (req, res) => {
       };
 
       // Gửi cho tất cả members trong room (trừ người gửi)
-      const members = room.members.filter((member) => member !== currentUserId);
+      const members = room.members || [];
+      const otherMembers = members.filter((member) => member !== currentUserId);
 
-      members.forEach(async (memberKeycloakId) => {
+      otherMembers.forEach(async (memberKeycloakId) => {
         const member = await User.findOne({ keycloakId: memberKeycloakId });
         if (member?.socketId) {
           io.to(member.socketId).emit(eventName, {
@@ -909,7 +927,9 @@ exports.sendEncryptedMessage = catchAsync(async (req, res) => {
       });
 
       // Gửi lại cho sender để confirm
-      io.to(user.socketId).emit(eventName, messageForSocket);
+      if (user.socketId) {
+        io.to(user.socketId).emit(eventName, messageForSocket);
+      }
     }
 
     res.status(200).json({
@@ -922,13 +942,13 @@ exports.sendEncryptedMessage = catchAsync(async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Failed to send encrypted message",
+      error: error.message,
     });
   }
 });
 
-// Lấy encrypted messages của một room
-// POST /users/messages/encrypted
-exports.getEncryptedMessages = catchAsync(async (req, res) => {
+// 12. Lấy encrypted messages của một room - ĐÃ SỬA VỚI CHECK ROOM ACCESS
+const getEncryptedMessages = catchAsync(async (req, res) => {
   try {
     const { roomId, page = 1, limit = 50 } = req.body;
     const currentUserId = req.user?.keycloakId;
@@ -943,14 +963,9 @@ exports.getEncryptedMessages = catchAsync(async (req, res) => {
       });
     }
 
-    // KIỂM TRA QUYỀN TRUY CẬP
-    const user = await User.findOne({ keycloakId: currentUserId });
-    const room = await Room.findOne({
-      _id: roomId,
-      members: currentUserId,
-    });
-
-    if (!room) {
+    // KIỂM TRA QUYỀN TRUY CẬP ROOM
+    const hasRoomAccess = await checkRoomAccess(currentUserId, roomId);
+    if (!hasRoomAccess) {
       return res.status(403).json({
         status: "error",
         message: "Access denied to this room",
@@ -985,13 +1000,14 @@ exports.getEncryptedMessages = catchAsync(async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Failed to fetch encrypted messages",
+      error: error.message,
     });
   }
 });
 
-// Generate key pair (cho client-side generation)
+// 13. Generate key pair (cho client-side generation)
 // GET /users/e2ee/generate-keypair
-exports.generateKeyPair = catchAsync(async (req, res) => {
+const generateKeyPair = catchAsync(async (req, res) => {
   try {
     res.status(200).json({
       status: "success",
@@ -1035,9 +1051,9 @@ async function generateKeyPair() {
   }
 });
 
-// Verify key fingerprint
+// 14. Verify key fingerprint
 // POST /users/e2ee/verify-fingerprint
-exports.verifyKeyFingerprint = catchAsync(async (req, res) => {
+const verifyKeyFingerprint = catchAsync(async (req, res) => {
   try {
     const { publicKey, expectedFingerprint } = req.body;
 
@@ -1068,9 +1084,28 @@ exports.verifyKeyFingerprint = catchAsync(async (req, res) => {
   }
 });
 
+// ==================== EXPORTS ====================
+
 module.exports = {
+  // Utility functions
   calculateKeyFingerprint,
   generateExchangeId,
   checkE2EEAccess,
-  ...exports,
+  checkRoomAccess, // Export hàm check room access
+
+  // Main controller functions
+  updateE2EEPublicKey,
+  getUserE2EEPublicKey,
+  getAllMyE2EEKeys,
+  initiateE2EEKeyExchange,
+  confirmE2EEKeyExchange,
+  getE2EEInfo,
+  toggleE2EE,
+  deleteE2EEKey,
+  setActiveE2EEKey,
+  checkE2EEStatus,
+  sendEncryptedMessage,
+  getEncryptedMessages, // Đã sửa với checkRoomAccess
+  generateKeyPair,
+  verifyKeyFingerprint,
 };

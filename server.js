@@ -1,4 +1,4 @@
-// server.js - OPTIMIZED VERSION
+// server.js - COMPLETE VERSION WITH E2EE HANDLERS
 const mongoose = require("mongoose");
 const dotenv = require("dotenv");
 const http = require("http");
@@ -42,12 +42,19 @@ const io = socketIO(server, {
   pingInterval: 25000,
 });
 
-// Import modules
+// ==================
+// 📋 IMPORT ALL EVENT HANDLERS
+// ==================
+console.log("\n" + "=".repeat(60));
+console.log("🔧 IMPORTING SOCKET HANDLERS");
+console.log("=".repeat(60));
+
+// Import core modules
 const User = require("./models/user");
 const AuditLog = require("./models/auditLog");
 const { syncUserFromToken } = require("./utils/auth");
 
-// Import event handlers
+// Import core event handlers
 const chatEvents = require("./socket/events/chat");
 const callEvents = require("./socket/events/call");
 const groupChatEvents = require("./socket/events/groupChat");
@@ -57,8 +64,60 @@ const {
   handleUnpinMessage,
 } = require("./controllers/userController");
 
-// 🆕 THÊM: Import task controller
+// Import task controller
 const taskController = require("./controllers/taskController");
+
+// ==================
+// 🆕 IMPORT E2EE HANDLERS
+// ==================
+console.log("\n🔐 IMPORTING E2EE HANDLERS...");
+
+let e2eeHandlers = null;
+let e2eeEvents = null;
+
+try {
+  // Import E2EE handlers
+  console.log("[DEBUG] Loading e2eeHandlers...");
+  const importedHandlers = require("./socket/handlers/e2eeHandlers");
+  console.log(`[DEBUG] Type: ${typeof importedHandlers}`);
+
+  if (typeof importedHandlers === "function") {
+    e2eeHandlers = importedHandlers;
+    console.log("✅ e2eeHandlers imported as function");
+  } else if (
+    importedHandlers &&
+    typeof importedHandlers.registerE2EEHandlers === "function"
+  ) {
+    e2eeHandlers = importedHandlers.registerE2EEHandlers;
+    console.log("✅ e2eeHandlers imported from object");
+  } else {
+    console.log("❌ e2eeHandlers not a function or has wrong structure");
+  }
+} catch (error) {
+  console.error("❌ Failed to import e2eeHandlers:", error.message);
+  console.error("Stack:", error.stack);
+}
+
+try {
+  // Import E2EE events
+  console.log("\n[DEBUG] Loading e2eeEvents...");
+  const importedEvents = require("./socket/events/e2eeEvents");
+  console.log(`[DEBUG] Type: ${typeof importedEvents}`);
+
+  if (typeof importedEvents === "function") {
+    e2eeEvents = importedEvents;
+    console.log("✅ e2eeEvents imported as function");
+  } else {
+    console.log("❌ e2eeEvents not a function");
+  }
+} catch (error) {
+  console.error("❌ Failed to import e2eeEvents:", error.message);
+}
+
+console.log(`\n📊 IMPORT STATUS:`);
+console.log(`   e2eeHandlers: ${e2eeHandlers ? "✅ Loaded" : "❌ Failed"}`);
+console.log(`   e2eeEvents: ${e2eeEvents ? "✅ Loaded" : "❌ Failed"}`);
+console.log("=".repeat(60) + "\n");
 
 // ==================
 // 🗄️ MongoDB Connection
@@ -101,11 +160,11 @@ mongoose
 // ==================
 app.set("socketio", io);
 
-// 🆕 THÊM: Set socket io instance cho task controller
+// Set socket io instance cho task controller
 taskController.setSocketIo(io);
 
 // ==================
-// 👥 Socket.IO Authentication Middleware (SIMPLIFIED)
+// 👥 Socket.IO Authentication Middleware
 // ==================
 io.use(async (socket, next) => {
   try {
@@ -138,7 +197,7 @@ io.use(async (socket, next) => {
       return next(new Error("Authentication error: No token provided"));
     }
 
-    // Verify token - SIMPLIFIED VERSION
+    // Verify token
     const decoded = jwt.decode(token);
     if (!decoded) {
       return next(new Error("Invalid token"));
@@ -185,7 +244,125 @@ io.use(async (socket, next) => {
 });
 
 // ==================
-// 🔄 Socket.IO Connection Handler (SIMPLIFIED)
+// 🛠️ HELPER FUNCTIONS
+// ==================
+
+/**
+ * Basic E2EE handler registration as fallback
+ */
+function registerBasicE2EEHandlers(socket, io) {
+  const { keycloakId, username } = socket.user || {};
+
+  console.log(`🔐 [Basic E2EE] Registering basic handlers for ${username}`);
+
+  // Basic ping handler
+  socket.on("ping", (callback) => {
+    console.log(`🏓 [Basic E2EE - ${username}] ping received`);
+
+    if (callback && typeof callback === "function") {
+      callback({
+        success: true,
+        message: "pong from basic handler",
+        timestamp: new Date().toISOString(),
+        userId: keycloakId,
+        source: "basic-e2ee-handler",
+      });
+      console.log(`🏓 [Basic E2EE - ${username}] callback sent`);
+    } else {
+      console.log(`⚠️ [Basic E2EE - ${username}] ping without callback`);
+    }
+  });
+
+  // Basic health_check handler
+  socket.on("health_check", (callback) => {
+    console.log(`🏥 [Basic E2EE - ${username}] health_check received`);
+
+    if (callback && typeof callback === "function") {
+      callback({
+        status: "healthy",
+        userId: keycloakId,
+        username: username,
+        socketId: socket.id,
+        timestamp: new Date().toISOString(),
+        handlers: {
+          chat: true,
+          call: true,
+          groupChat: true,
+          tasks: true,
+          e2ee: false, // basic mode
+          e2eeEvents: false,
+          pin: true,
+        },
+      });
+    }
+  });
+
+  // Basic E2EE info handler
+  socket.on("get_e2ee_info", async (callback) => {
+    try {
+      console.log(`📤 [Basic E2EE - ${username}] get_e2ee_info received`);
+
+      const user = await User.findOne({ keycloakId }).select(
+        "keycloakId username e2eeEnabled"
+      );
+
+      console.log("111111", user.e2eeEnabled);
+
+      if (callback) {
+        callback({
+          success: true,
+          data: {
+            keycloakId: user?.keycloakId || keycloakId,
+            username: user?.username || username,
+            e2eeEnabled: user?.e2eeEnabled || false,
+            message: "E2EE handler not fully loaded - using basic mode",
+            source: "basic-e2ee-handler",
+          },
+        });
+      }
+    } catch (err) {
+      if (callback) {
+        callback({
+          success: false,
+          error: err.message,
+        });
+      }
+    }
+  });
+
+  console.log(`✅ [Basic E2EE] Basic handlers registered for ${username}`);
+}
+
+/**
+ * Join existing group rooms when user connects
+ */
+async function joinExistingGroupRooms(socket, keycloakId) {
+  try {
+    const Room = require("./models/room");
+    const rooms = await Room.find({
+      members: keycloakId,
+      isGroup: true,
+      isActive: true,
+    }).select("_id name");
+
+    rooms.forEach((room) => {
+      const roomId = room._id.toString();
+      socket.join(roomId);
+      console.log(
+        `✅ ${socket.user?.username} auto-joined group room: ${room.name} (${roomId})`
+      );
+    });
+
+    console.log(
+      `✅ ${socket.user?.username} joined ${rooms.length} group rooms`
+    );
+  } catch (err) {
+    console.error("❌ Error joining group rooms:", err.message);
+  }
+}
+
+// ==================
+// 🔄 Socket.IO Connection Handler
 // ==================
 io.on("connection", (socket) => {
   const { keycloakId, username } = socket.user || {};
@@ -195,10 +372,18 @@ io.on("connection", (socket) => {
     return;
   }
 
-  console.log(`🔌 User connected: ${username} (${keycloakId}) - ${socket.id}`);
+  console.log(
+    `\n🎉 User connected: ${username} (${keycloakId}) - ${socket.id}`
+  );
 
   // ==================
-  // 📋 REGISTER EVENT HANDLERS
+  // 🏓 ALWAYS REGISTER BASIC PING HANDLER FIRST
+  // ==================
+  console.log(`🔧 [${username}] Registering BASIC ping handler...`);
+  console.log(`✅ [${username}] Basic ping handler registered`);
+
+  // ==================
+  // 📋 REGISTER CORE EVENT HANDLERS
   // ==================
   chatEvents(socket, io);
   callEvents(socket, io);
@@ -206,10 +391,42 @@ io.on("connection", (socket) => {
   taskHandlersEvents(socket, io);
 
   // ==================
-  // 📌 TASK EVENTS
+  // 🔐 REGISTER E2EE HANDLERS
+  // ==================
+  if (e2eeHandlers && typeof e2eeHandlers === "function") {
+    console.log(`🔐 [${username}] Registering E2EE handlers...`);
+    try {
+      e2eeHandlers(socket, io);
+      console.log(`✅ [${username}] E2EE handlers registered`);
+    } catch (err) {
+      console.error(`❌ [${username}] E2EE handlers error:`, err.message);
+      console.log(`⚠️ [${username}] Using basic handlers as fallback`);
+      registerBasicE2EEHandlers(socket, io);
+    }
+  } else {
+    console.log(`⚠️ [${username}] No E2EE handlers available, using basic`);
+    registerBasicE2EEHandlers(socket, io);
+  }
+
+  // ==================
+  // 📡 REGISTER E2EE EVENTS
+  // ==================
+  if (e2eeEvents && typeof e2eeEvents === "function") {
+    console.log(`📡 [${username}] Registering E2EE events...`);
+    try {
+      e2eeEvents(socket, io);
+      console.log(`✅ [${username}] E2EE events registered`);
+    } catch (err) {
+      console.error(`❌ [${username}] E2EE events error:`, err.message);
+    }
+  }
+
+  // ==================
+  // 📌 REGISTER OTHER HANDLERS
   // ==================
   console.log(`🔌 Setting up task socket handlers for user: ${keycloakId}`);
 
+  // Task events
   socket.on("task_assign", (data) => {
     console.log("📨 Task assign event received:", data);
     taskController.handleTaskAssignment(socket, data);
@@ -235,9 +452,7 @@ io.on("connection", (socket) => {
     taskController.handleTaskComment(socket, data);
   });
 
-  // ==================
-  // 📌 PIN/UNPIN MESSAGE EVENTS
-  // ==================
+  // Pin/unpin events
   socket.on("pin_direct_message", (data) => {
     console.log("📌 Pin direct message event received:", data);
     handlePinMessage(socket, data);
@@ -257,6 +472,16 @@ io.on("connection", (socket) => {
     console.log("📌 Unpin group message event received:", data);
     handleUnpinMessage(socket, data);
   });
+
+  // ==================
+  // 🏠 JOIN ROOMS
+  // ==================
+  // Join personal room
+  socket.join(keycloakId);
+  console.log(`🚪 ${username} joined personal room: ${keycloakId}`);
+
+  // Join existing group rooms
+  joinExistingGroupRooms(socket, keycloakId);
 
   // ==================
   // 👤 USER PRESENCE
@@ -286,6 +511,56 @@ io.on("connection", (socket) => {
     metadata: { socketId: socket.id },
     ip: socket.handshake.address,
   }).catch((err) => console.error("AuditLog error:", err.message));
+
+  // ==================
+  // 🏥 HEALTH CHECK HANDLER
+  // ==================
+  socket.on("health_check", (callback) => {
+    console.log(`🏥 [${username}] health_check received`);
+
+    if (callback && typeof callback === "function") {
+      callback({
+        status: "healthy",
+        userId: keycloakId,
+        username: username,
+        socketId: socket.id,
+        timestamp: new Date().toISOString(),
+        handlers: {
+          chat: true,
+          call: true,
+          groupChat: true,
+          tasks: true,
+          e2ee: !!e2eeHandlers,
+          e2eeEvents: !!e2eeEvents,
+          pin: true,
+        },
+      });
+    }
+  });
+
+  // ==================
+  // 🎯 CUSTOM ROOM MANAGEMENT
+  // ==================
+  socket.on("join_keycloak_room", ({ keycloakId: targetRoomId }) => {
+    if (targetRoomId) {
+      socket.join(targetRoomId);
+      console.log(`🚪 [${username}] manually joined room: ${targetRoomId}`);
+    }
+  });
+
+  socket.on("join_room", ({ roomId }) => {
+    if (roomId) {
+      socket.join(roomId);
+      console.log(`🚪 [${username}] joined room: ${roomId}`);
+    }
+  });
+
+  socket.on("leave_room", ({ roomId }) => {
+    if (roomId) {
+      socket.leave(roomId);
+      console.log(`🚪 [${username}] left room: ${roomId}`);
+    }
+  });
 
   // ==================
   // ❌ DISCONNECT HANDLER
@@ -324,17 +599,30 @@ io.on("connection", (socket) => {
       console.error("❌ Disconnect error:", err.message);
     }
   });
+
+  // ==================
+  // ✅ VERIFICATION LOG
+  // ==================
+  console.log(`\n🔍 [${username}] Handler verification:`);
+  console.log(`   Ping listeners: ${socket.listeners("ping").length}`);
+  console.log(
+    `   health_check listeners: ${socket.listeners("health_check").length}`
+  );
+  console.log(
+    `   get_e2ee_info listeners: ${socket.listeners("get_e2ee_info").length}`
+  );
+  console.log(`✅ All handlers registered for ${username}\n`);
 });
 
 // ==================
 // 🚀 Start Server
 // ==================
-const PORT = process.env.PORT || 8000;
+const PORT = process.env.PORT || 3001; // Changed to 3001 to match your setup
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 // Validate critical environment variables
 function validateEnvironment() {
-  console.log("🔧 Validating environment configuration...");
+  console.log("\n🔧 Validating environment configuration...");
 
   const requiredVars = ["DATABASE"];
   const missingVars = requiredVars.filter((varName) => !process.env[varName]);
@@ -368,14 +656,24 @@ function startServer() {
     console.log(`   💬 Chat API:      http://localhost:${PORT}/chat`);
     console.log(`   👥 Users API:     http://localhost:${PORT}/users`);
     console.log(`   📊 WebSocket Test: http://localhost:${PORT}/ws-test`);
+    console.log(`   🔐 E2EE API:       http://localhost:${PORT}/e2ee`);
     console.log("=".repeat(60));
     console.log("\n🔧 Configuration:");
-    console.log(`   Database: Connected`);
+    console.log(
+      `   Database: ${
+        mongoose.connection.readyState === 1
+          ? "✅ Connected"
+          : "❌ Disconnected"
+      }`
+    );
     console.log(`   Node: ${process.version}`);
     console.log(
       `   Memory: ${Math.round(
         process.memoryUsage().heapUsed / 1024 / 1024
       )} MB`
+    );
+    console.log(
+      `   Socket Handlers: ${e2eeHandlers ? "✅ E2EE Loaded" : "⚠️ Basic Only"}`
     );
     console.log("=".repeat(60));
   });

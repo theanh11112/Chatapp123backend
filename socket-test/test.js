@@ -1,4 +1,4 @@
-// test-e2ee-socket.js - UPDATED VERSION
+// test-e2ee-complete.js
 const { io } = require("socket.io-client");
 const axios = require("axios");
 const crypto = require("crypto");
@@ -9,55 +9,25 @@ const REALM = "chat-app";
 const CLIENT_ID = "my-react-app";
 const CLIENT_SECRET = "bFUtkzEs7nOV0DPBcRnD9ibVhiSYlkqF";
 
-// Test users
-const TEST_USERS = [
-  {
-    username: "hoangngan",
-    password: "1234",
-    keycloakId: "f5dcb70a-4b2e-4f9c-a17f-3015cb6aed42",
-  },
-  {
-    username: "honghao",
-    password: "1234",
-    keycloakId: "ba025aa5-6cfb-463c-b245-e94472081d45",
-  },
-];
-
-class E2EESocketTest {
+class E2EECompleteTest {
   constructor() {
+    this.sockets = {};
+    this.tokens = {};
     this.testResults = [];
-    this.userSockets = {};
-    this.userTokens = {};
-    this.socketListeners = {};
-  }
+    this.aliceId = "f5dcb70a-4b2e-4f9c-a17f-3015cb6aed42"; // hoangngan
+    this.bobId = "ba025aa5-6cfb-463c-b245-e94472081d45"; // honghao
 
-  log(message, data = null, level = "info") {
-    const timestamp = new Date().toLocaleTimeString();
-    const prefix =
-      {
-        info: "ℹ️",
-        success: "✅",
-        error: "❌",
-        warning: "⚠️",
-        debug: "🔍",
-        test: "🧪",
-      }[level] || "📝";
+    // Các room ID sẽ được lấy từ API
+    this.roomId = null;
+    this.directRoomId = null;
 
-    console.log(`${prefix} [${timestamp}] ${message}`);
-    if (data) {
-      if (typeof data === "object") {
-        console.log(
-          "   Data:",
-          JSON.stringify(data, null, 2).substring(0, 300)
-        );
-      } else {
-        console.log("   Data:", data);
-      }
-    }
+    // Thêm debug mode
+    this.debug = true;
   }
 
   async getToken(username, password) {
     try {
+      console.log(`\n🔐 Getting token for ${username}...`);
       const response = await axios.post(
         `${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token`,
         new URLSearchParams({
@@ -72,609 +42,670 @@ class E2EESocketTest {
           timeout: 5000,
         }
       );
-      return response.data.access_token;
+
+      const token = response.data.access_token;
+      console.log(`✅ Token obtained (${token.length} chars)`);
+      return token;
     } catch (error) {
-      throw new Error(`Token failed: ${error.message}`);
+      console.error(`❌ Token error: ${error.message}`);
+      throw error;
     }
   }
 
-  async connectSocket(user) {
+  async connectSocket(username, token) {
     return new Promise((resolve, reject) => {
+      console.log(`\n🔌 Connecting socket for ${username}...`);
+
       const socket = io(SERVER_URL, {
-        auth: { token: this.userTokens[user.username] },
+        auth: { token },
         transports: ["websocket", "polling"],
         reconnection: false,
         timeout: 10000,
-        reconnectionAttempts: 1,
+        forceNew: true,
       });
 
-      // Setup socket listeners for debugging
-      this.setupSocketListeners(socket, user.username);
+      // Debug listeners - tăng cường logging
+      socket.onAny((event, ...args) => {
+        if (this.debug) {
+          console.log(
+            `📡 [${username}] ${event}:`,
+            args.length > 1 ? args : args[0]
+          );
+        }
+      });
 
       socket.on("connect", () => {
-        this.log(
-          `Connected: ${user.username}`,
-          { socketId: socket.id },
-          "success"
-        );
+        console.log(`✅ ${username} connected! Socket ID: ${socket.id}`);
         resolve(socket);
       });
 
       socket.on("connect_error", (error) => {
-        this.log(`Connection failed: ${user.username}`, error.message, "error");
+        console.error(`❌ ${username} connection error:`, error.message);
         reject(error);
       });
 
-      // Handle authentication errors
-      socket.on("error", (error) => {
-        this.log(`Socket error: ${user.username}`, error, "error");
-        reject(error);
+      // Thêm socket event listeners để debug E2EE
+      socket.on("e2ee_error", (error) => {
+        console.error(`❌ [${username}] E2EE Error:`, error);
       });
 
-      socket.on("disconnect", (reason) => {
-        this.log(`Disconnected: ${user.username}`, reason, "warning");
+      socket.on("e2ee_access_denied", (data) => {
+        console.error(`❌ [${username}] E2EE Access Denied:`, data);
       });
 
-      // Test specific handlers
-      socket.on("health_check_response", (data) => {
-        this.log(`Health check response: ${user.username}`, data, "debug");
-      });
-
-      socket.on("key_exchange_request", (data) => {
-        this.log(
-          `Key exchange request received: ${user.username}`,
-          data,
-          "debug"
-        );
-      });
-
-      socket.on("friend_e2ee_status_changed", (data) => {
-        this.log(`Friend E2EE status changed: ${user.username}`, data, "debug");
-      });
-
-      // Add more event listeners as needed
-      const importantEvents = [
-        "user_online",
-        "user_offline",
-        "message_pinned",
-        "message_unpinned",
-        "encrypted_message",
-        "encrypted_group_message",
-        "friend_e2ee_key_updated",
-        "friend_e2ee_key_changed",
-      ];
-
-      importantEvents.forEach((event) => {
-        socket.on(event, (data) => {
-          this.log(`${event}: ${user.username}`, data, "debug");
-        });
+      socket.on("encrypted_message_sent", (data) => {
+        console.log(`✅ [${username}] Encrypted message sent:`, data);
       });
 
       setTimeout(() => {
         if (!socket.connected) {
-          reject(new Error(`Connection timeout for ${user.username}`));
+          reject(new Error(`Connection timeout for ${username}`));
         }
-      }, 10000);
+      }, 15000);
     });
   }
 
-  setupSocketListeners(socket, username) {
-    const listeners = {
-      any: (...args) => {
-        const event = args[0];
-        const data = args.slice(1);
-
-        // Only log E2EE and important events
-        if (
-          event.includes("e2ee") ||
-          event.includes("key") ||
-          event.includes("encrypt") ||
-          event === "ping" ||
-          event === "error" ||
-          event.includes("friend")
-        ) {
-          this.log(
-            `📡 [${username}] ${event}`,
-            data.length === 1 ? data[0] : data,
-            "debug"
-          );
-        }
-      },
-    };
-
-    socket.onAny(listeners.any);
-    this.socketListeners[username] = listeners;
-  }
-
-  async testEvent(socket, eventName, data, timeout = 5000) {
+  async testEvent(socket, eventName, data = null, timeout = 10000) {
     return new Promise((resolve) => {
       const startTime = Date.now();
-      let responded = false;
+
+      console.log(`\n🧪 Testing ${eventName}...`);
+      if (data && this.debug) {
+        console.log(`   Data:`, data);
+      }
 
       const timeoutId = setTimeout(() => {
-        if (!responded) {
-          this.log(`${eventName} timeout after ${timeout}ms`, null, "warning");
-          resolve({
-            success: false,
-            error: `Timeout after ${timeout}ms`,
-            duration: Date.now() - startTime,
-            event: eventName,
-          });
-        }
+        console.log(`⏰ ${eventName} timeout after ${timeout}ms`);
+        resolve({
+          test: eventName,
+          success: false,
+          error: "Timeout",
+          duration: Date.now() - startTime,
+        });
       }, timeout);
 
-      this.log(`Testing ${eventName}...`, data, "test");
+      const eventsWithoutData = [
+        "ping",
+        "get_e2ee_info",
+        "get_my_e2ee_keys",
+        "health_check",
+      ];
 
-      socket.emit(eventName, data, (response) => {
+      const handler = (response) => {
         clearTimeout(timeoutId);
-        responded = true;
         const duration = Date.now() - startTime;
-
-        this.log(
-          `${eventName} response (${duration}ms)`,
-          response,
-          response?.success ? "success" : "error"
-        );
-
+        console.log(`📨 ${eventName} response (${duration}ms):`, response);
         resolve({
+          test: eventName,
           success: response?.success === true || response?.status === "success",
           data: response,
           duration,
-          event: eventName,
-        });
-      });
-    });
-  }
-
-  async testEventWithoutCallback(socket, eventName, data) {
-    return new Promise((resolve) => {
-      this.log(`Emitting ${eventName} (no callback)...`, data, "test");
-      socket.emit(eventName, data);
-
-      // Wait a bit for async processing
-      setTimeout(() => {
-        resolve({
-          success: true,
-          event: eventName,
-          message: "Event emitted without callback",
-        });
-      }, 1000);
-    });
-  }
-
-  async testBroadcastEvent(socket, eventName, expectedEvent, timeout = 5000) {
-    return new Promise((resolve) => {
-      const startTime = Date.now();
-      let received = false;
-      let receivedData = null;
-
-      const timeoutId = setTimeout(() => {
-        if (!received) {
-          this.log(
-            `${expectedEvent} not received after ${timeout}ms`,
-            null,
-            "warning"
-          );
-          resolve({
-            success: false,
-            error: `Broadcast event ${expectedEvent} not received`,
-            duration: Date.now() - startTime,
-            event: eventName,
-          });
-        }
-      }, timeout);
-
-      // Listen for the expected broadcast event
-      const handler = (data) => {
-        received = true;
-        receivedData = data;
-        clearTimeout(timeoutId);
-        this.log(`Received broadcast: ${expectedEvent}`, data, "debug");
-        resolve({
-          success: true,
-          data: data,
-          duration: Date.now() - startTime,
-          event: eventName,
         });
       };
 
-      socket.once(expectedEvent, handler);
-
-      // Emit the trigger event
-      this.log(
-        `Testing broadcast: ${eventName} -> ${expectedEvent}`,
-        null,
-        "test"
-      );
-      socket.emit(eventName, { test: true });
-
-      // Cleanup after timeout
-      timeoutId.cleanup = () => {
-        socket.off(expectedEvent, handler);
-      };
+      if (eventsWithoutData.includes(eventName)) {
+        socket.emit(eventName, handler);
+      } else {
+        socket.emit(eventName, data, handler);
+      }
     });
   }
 
-  async runTests() {
+  async makeAPIRequest(method, endpoint, data = null, token = null) {
     try {
-      console.log("🧪 E2EE Socket Handler Tests");
-      console.log("=".repeat(70));
-      console.log(`Server: ${SERVER_URL}`);
-      console.log(`Keycloak: ${KEYCLOAK_URL}`);
-      console.log("=".repeat(70));
-
-      // 1. Get tokens
-      this.log("1. Getting tokens...", null, "info");
-      for (const user of TEST_USERS) {
-        try {
-          const token = await this.getToken(user.username, user.password);
-          this.userTokens[user.username] = token;
-          this.log(
-            `Token obtained: ${user.username}`,
-            { length: token.length },
-            "success"
-          );
-        } catch (error) {
-          this.log(
-            `Failed to get token: ${user.username}`,
-            error.message,
-            "error"
-          );
-          throw error;
-        }
-        await this.delay(500);
+      const url = `${SERVER_URL}${endpoint}`;
+      if (this.debug) {
+        console.log(`🌐 API ${method}: ${url}`);
       }
 
-      // 2. Connect sockets
-      this.log("\n2. Connecting sockets...", null, "info");
-      for (const user of TEST_USERS) {
-        try {
-          const socket = await this.connectSocket(user);
-          this.userSockets[user.username] = socket;
-        } catch (error) {
-          this.log(
-            `Failed to connect socket: ${user.username}`,
-            error.message,
-            "error"
-          );
-          throw error;
-        }
-        await this.delay(1000);
+      const config = {
+        headers: {},
+        timeout: 10000,
+      };
+
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
       }
 
-      const aliceSocket = this.userSockets.hoangngan;
-      const bobSocket = this.userSockets.honghao;
+      let response;
+      switch (method.toLowerCase()) {
+        case "get":
+          response = await axios.get(url, config);
+          break;
+        case "post":
+          config.headers["Content-Type"] = "application/json";
+          response = await axios.post(url, data, config);
+          break;
+        case "patch":
+          config.headers["Content-Type"] = "application/json";
+          response = await axios.patch(url, data, config);
+          break;
+        default:
+          throw new Error(`Unsupported method: ${method}`);
+      }
 
-      // 3. Test basic socket events
-      this.log("\n3. Testing basic socket events...", null, "info");
-
-      // Test 3.1: health_check
-      const healthResult = await this.testEvent(aliceSocket, "health_check");
-      this.testResults.push({
-        test: "health_check",
-        success: healthResult.success,
-        duration: healthResult.duration,
-        data: healthResult.data,
-      });
-
-      await this.delay(1000);
-
-      // Test 3.2: ping
-      const pingResult = await this.testEvent(aliceSocket, "ping");
-      this.testResults.push({
-        test: "ping",
-        success: pingResult.success,
-        duration: pingResult.duration,
-      });
-
-      await this.delay(1000);
-
-      // Test 3.3: get_e2ee_info
-      const infoResult = await this.testEvent(aliceSocket, "get_e2ee_info");
-      this.testResults.push({
-        test: "get_e2ee_info",
-        success: infoResult.success,
-        hasData: !!infoResult.data?.data,
-        e2eeEnabled: infoResult.data?.data?.e2eeEnabled,
-        duration: infoResult.duration,
-      });
-
-      await this.delay(1000);
-
-      // Test 3.4: get_my_e2ee_keys
-      const keysResult = await this.testEvent(aliceSocket, "get_my_e2ee_keys");
-      this.testResults.push({
-        test: "get_my_e2ee_keys",
-        success: keysResult.success,
-        hasKeys: !!keysResult.data?.data?.keys,
-        keyCount: keysResult.data?.data?.keys?.length || 0,
-        duration: keysResult.duration,
-      });
-
-      await this.delay(1000);
-
-      // 4. Test E2EE key management
-      this.log("\n4. Testing E2EE key management...", null, "info");
-
-      // Generate test key
-      const ecdh = crypto.createECDH("prime256v1");
-      ecdh.generateKeys();
-      const testPublicKey = ecdh.getPublicKey("base64");
-      const fingerprint = crypto
-        .createHash("sha256")
-        .update(testPublicKey)
-        .digest("hex")
-        .substring(0, 8)
-        .toUpperCase();
-
-      // Test 4.1: update_e2ee_key
-      const updateResult = await this.testEvent(
-        aliceSocket,
-        "update_e2ee_key",
-        {
-          publicKey: testPublicKey,
-          keyType: "ecdh",
+      return response.data;
+    } catch (error) {
+      console.error(`❌ API Error: ${error.message}`);
+      if (error.response) {
+        console.error(`   Status: ${error.response.status}`);
+        if (error.response.data) {
+          console.error(
+            `   Data:`,
+            JSON.stringify(error.response.data, null, 2)
+          );
         }
+      }
+      throw error;
+    }
+  }
+
+  async checkRoomInDatabase(roomId) {
+    try {
+      console.log(`\n🔍 Checking room ${roomId} in database...`);
+
+      // Test bằng cách gọi API kiểm tra room
+      const response = await this.makeAPIRequest(
+        "post",
+        "/users/conversations/direct",
+        { roomId: roomId },
+        this.tokens.alice
       );
-      this.testResults.push({
-        test: "update_e2ee_key",
-        success: updateResult.success,
-        hasFingerprint: !!updateResult.data?.data?.fingerprint,
-        fingerprint: updateResult.data?.data?.fingerprint,
-        duration: updateResult.duration,
-      });
 
-      await this.delay(1500); // Extra time for friend notifications
+      if (response.data && response.data._id === roomId) {
+        console.log(`✅ Room exists in database`);
+        return true;
+      }
 
-      // Test 4.2: toggle_e2ee (enable)
-      const enableResult = await this.testEvent(aliceSocket, "toggle_e2ee", {
-        enabled: true,
-      });
-      this.testResults.push({
-        test: "toggle_e2ee (enable)",
-        success: enableResult.success,
-        isEnabled: enableResult.data?.data?.e2eeEnabled === true,
-        duration: enableResult.duration,
-      });
+      return false;
+    } catch (error) {
+      console.error(`❌ Error checking room: ${error.message}`);
+      return false;
+    }
+  }
 
-      await this.delay(1500); // Extra time for friend notifications
+  async testRoomAccess(roomId) {
+    try {
+      console.log(`\n🔐 Testing access to room ${roomId}...`);
 
-      // Test 4.3: get_e2ee_info again (should show enabled)
-      const infoResult2 = await this.testEvent(aliceSocket, "get_e2ee_info");
-      this.testResults.push({
-        test: "get_e2ee_info (after enable)",
-        success: infoResult2.success,
-        isEnabled: infoResult2.data?.data?.e2eeEnabled === true,
-        duration: infoResult2.duration,
-      });
+      // Test 1: Gửi tin nhắn bình thường trước
+      const testMessage = {
+        roomId: roomId,
+        content: "Test message for access verification",
+        type: "text",
+      };
 
-      await this.delay(1000);
+      console.log(`📝 Sending test message to verify access...`);
+      const messageResponse = await this.makeAPIRequest(
+        "post",
+        "/users/message",
+        testMessage,
+        this.tokens.alice
+      );
 
-      // Test 4.4: set_active_key (if we have fingerprint)
-      if (updateResult.data?.data?.fingerprint) {
-        const setActiveResult = await this.testEvent(
-          aliceSocket,
-          "set_active_key",
-          {
-            fingerprint: updateResult.data.data.fingerprint,
-          }
+      console.log(`✅ Room access verified:`, messageResponse);
+      return true;
+    } catch (error) {
+      console.error(
+        `❌ Room access denied:`,
+        error.response?.data || error.message
+      );
+
+      // Check specific error
+      if (error.response?.data?.message?.includes("Access denied")) {
+        console.log(`\n💡 ACCESS ISSUE DETECTED:`);
+        console.log(`   1. Room ID: ${roomId}`);
+        console.log(`   2. Alice ID: ${this.aliceId}`);
+        console.log(`   3. Error: ${error.response.data.message}`);
+        console.log(`\n🔧 SOLUTIONS:`);
+        console.log(`   • Check if room exists in MongoDB`);
+        console.log(`   • Check if Alice is in room members`);
+        console.log(`   • Check room schema structure`);
+      }
+
+      return false;
+    }
+  }
+
+  async getOrCreateDirectRoom() {
+    try {
+      console.log(
+        `\n🔍 Looking for existing direct room between Alice and Bob...`
+      );
+
+      // Thử lấy conversations trực tiếp
+      try {
+        const conversations = await this.makeAPIRequest(
+          "get",
+          "/users/conversations/direct",
+          null,
+          this.tokens.alice
         );
-        this.testResults.push({
-          test: "set_active_key",
-          success: setActiveResult.success,
-          fingerprint: updateResult.data.data.fingerprint,
-          duration: setActiveResult.duration,
-        });
-        await this.delay(1500);
+
+        if (conversations.data && conversations.data.length > 0) {
+          console.log(
+            `📋 Found ${conversations.data.length} direct conversations`
+          );
+
+          // Tìm conversation có cả 2 users
+          const directConv = conversations.data.find((conv) => {
+            const participantIds =
+              conv.participants?.map((p) =>
+                typeof p === "string" ? p : p.keycloakId || p._id
+              ) || [];
+
+            if (this.debug) {
+              console.log(
+                `   Checking conversation ${conv._id}:`,
+                participantIds
+              );
+            }
+
+            return (
+              participantIds.includes(this.aliceId) &&
+              participantIds.includes(this.bobId)
+            );
+          });
+
+          if (directConv) {
+            this.directRoomId = directConv._id;
+            console.log(
+              `✅ Found existing direct conversation: ${this.directRoomId}`
+            );
+
+            // Kiểm tra access ngay lập tức
+            await this.testRoomAccess(this.directRoomId);
+            return this.directRoomId;
+          }
+        }
+      } catch (error) {
+        console.log(
+          `⚠️  Could not fetch direct conversations: ${error.message}`
+        );
       }
 
-      // 5. Setup Bob for key exchange tests
-      this.log("\n5. Setting up Bob for key exchange tests...", null, "info");
+      // Nếu không tìm thấy, thử tạo room trực tiếp
+      console.log(`\n🏗️  Creating new direct room between Alice and Bob...`);
 
-      // Bob also needs a key
-      const bobEcdh = crypto.createECDH("prime256v1");
-      bobEcdh.generateKeys();
-      const bobPublicKey = bobEcdh.getPublicKey("base64");
-      const bobFingerprint = crypto
-        .createHash("sha256")
-        .update(bobPublicKey)
-        .digest("hex")
-        .substring(0, 8)
-        .toUpperCase();
+      const roomData = {
+        memberKeycloakIds: [this.aliceId, this.bobId],
+        type: "direct",
+        name: "Test E2EE Direct Chat",
+      };
 
-      // Setup Bob's E2EE
-      await this.testEvent(bobSocket, "update_e2ee_key", {
-        publicKey: bobPublicKey,
-        keyType: "ecdh",
-      });
+      console.log(`📝 Creating room with data:`, roomData);
 
-      await this.delay(1000);
+      // Thử tạo room qua endpoint create room
+      try {
+        const roomResponse = await this.makeAPIRequest(
+          "post",
+          "/users/room/create",
+          roomData,
+          this.tokens.alice
+        );
 
-      await this.testEvent(bobSocket, "toggle_e2ee", {
-        enabled: true,
-      });
+        if (roomResponse.data && roomResponse.data._id) {
+          this.directRoomId = roomResponse.data._id;
+          console.log(`✅ Direct room created: ${this.directRoomId}`);
 
-      await this.delay(1000);
+          // Đợi một chút để room được lưu vào database
+          await this.delay(2000);
 
-      // 6. Test key exchange functionality
-      this.log("\n6. Testing key exchange functionality...", null, "info");
-
-      // Test 6.1: request_e2ee_key
-      const requestKeyResult = await this.testEvent(
-        aliceSocket,
-        "request_e2ee_key",
-        {
-          userId: TEST_USERS[1].keycloakId, // Bob's ID
+          // Kiểm tra access
+          await this.testRoomAccess(this.directRoomId);
+          return this.directRoomId;
         }
-      );
-      this.testResults.push({
-        test: "request_e2ee_key",
-        success: requestKeyResult.success,
-        hasPublicKey: !!requestKeyResult.data?.data?.publicKey,
-        targetUserId: TEST_USERS[1].keycloakId,
-        duration: requestKeyResult.duration,
-      });
+      } catch (error) {
+        console.log(`⚠️  Room create endpoint failed: ${error.message}`);
+      }
+
+      console.log(`❌ Could not create or find direct room`);
+      return null;
+    } catch (error) {
+      console.error(`❌ Error in getOrCreateDirectRoom: ${error.message}`);
+      return null;
+    }
+  }
+
+  async runCompleteTest() {
+    console.log("=".repeat(70));
+    console.log("🚀 COMPLETE E2EE BACKEND TEST");
+    console.log("=".repeat(70));
+    console.log(`Server: ${SERVER_URL}`);
+    console.log(`Keycloak: ${KEYCLOAK_URL}`);
+    console.log(`Alice ID: ${this.aliceId}`);
+    console.log(`Bob ID: ${this.bobId}`);
+    console.log(`Debug Mode: ${this.debug}`);
+    console.log("=".repeat(70));
+
+    try {
+      // ==================== PHASE 1: SETUP ====================
+      console.log("\n📋 PHASE 1: SETUP");
+      console.log("-".repeat(50));
+
+      // Get tokens
+      this.tokens.alice = await this.getToken("hoangngan", "1234");
+      this.tokens.bob = await this.getToken("honghao", "1234");
+
+      // Connect sockets
+      this.sockets.alice = await this.connectSocket("Alice", this.tokens.alice);
+      this.sockets.bob = await this.connectSocket("Bob", this.tokens.bob);
 
       await this.delay(2000);
 
-      // Test 6.2: check_e2ee_status
-      const checkStatusResult = await this.testEvent(
-        aliceSocket,
-        "check_e2ee_status",
-        {
-          userId: TEST_USERS[1].keycloakId,
-        }
+      // ==================== PHASE 1.5: ROOM SETUP ====================
+      console.log("\n📋 PHASE 1.5: ROOM SETUP");
+      console.log("-".repeat(50));
+
+      // Tạo hoặc tìm direct room
+      console.log(`\n🔄 Creating/finding direct room...`);
+      this.roomId = await this.getOrCreateDirectRoom();
+
+      if (!this.roomId) {
+        console.log(`\n❌ CRITICAL: No room available for testing!`);
+        console.log(`💡 TROUBLESHOOTING:`);
+        console.log(`   1. Check if users exist in database`);
+        console.log(`   2. Check room creation API endpoint`);
+        console.log(`   3. Check server logs for errors`);
+        console.log(`\n⚠️  Continuing with room ID = null (tests will fail)`);
+      } else {
+        console.log(`\n✅ Room ID for testing: ${this.roomId}`);
+
+        // Kiểm tra kỹ hơn về room
+        await this.checkRoomInDatabase(this.roomId);
+        await this.testRoomAccess(this.roomId);
+      }
+
+      await this.delay(2000);
+
+      // ==================== PHASE 2: BASIC HANDLERS ====================
+      console.log("\n📋 PHASE 2: BASIC HANDLERS TEST");
+      console.log("-".repeat(50));
+
+      // Test 1: Ping
+      const pingResult = await this.testEvent(this.sockets.alice, "ping");
+      this.testResults.push(pingResult);
+
+      // Test 2: Health Check
+      const healthResult = await this.testEvent(
+        this.sockets.alice,
+        "health_check"
       );
-      this.testResults.push({
-        test: "check_e2ee_status",
-        success: checkStatusResult.success,
-        isE2EEEnabled: checkStatusResult.data?.data?.e2eeEnabled,
-        canEncrypt: checkStatusResult.data?.data?.canEncrypt,
-        duration: checkStatusResult.duration,
-      });
+      this.testResults.push(healthResult);
+
+      // Test 3: Get E2EE Info
+      const infoResult = await this.testEvent(
+        this.sockets.alice,
+        "get_e2ee_info"
+      );
+      this.testResults.push(infoResult);
+
+      // Test 4: Get My E2EE Keys
+      const keysResult = await this.testEvent(
+        this.sockets.alice,
+        "get_my_e2ee_keys"
+      );
+      this.testResults.push(keysResult);
 
       await this.delay(1000);
 
-      // Test 6.3: initiate_key_exchange
-      const initiateExchangeResult = await this.testEvent(
-        aliceSocket,
-        "initiate_key_exchange",
+      // ==================== PHASE 3: KEY MANAGEMENT ====================
+      console.log("\n📋 PHASE 3: KEY MANAGEMENT");
+      console.log("-".repeat(50));
+
+      // Generate test keys
+      const aliceKey = crypto.createECDH("prime256v1");
+      aliceKey.generateKeys();
+      const alicePublicKey = aliceKey.getPublicKey("base64");
+
+      const bobKey = crypto.createECDH("prime256v1");
+      bobKey.generateKeys();
+      const bobPublicKey = bobKey.getPublicKey("base64");
+
+      console.log(`🔑 Generated test keys:`);
+      console.log(`   Alice: ${alicePublicKey.substring(0, 30)}...`);
+      console.log(`   Bob: ${bobPublicKey.substring(0, 30)}...`);
+
+      // Test 5: Update Alice's key
+      const updateAliceResult = await this.testEvent(
+        this.sockets.alice,
+        "update_e2ee_key",
         {
-          peerId: TEST_USERS[1].keycloakId,
+          publicKey: alicePublicKey,
+          keyType: "ecdh",
         }
       );
-      this.testResults.push({
-        test: "initiate_key_exchange",
-        success: initiateExchangeResult.success,
-        hasExchangeId: !!initiateExchangeResult.data?.data?.exchangeId,
-        duration: initiateExchangeResult.duration,
-      });
+      this.testResults.push(updateAliceResult);
 
-      await this.delay(2000); // Wait for Bob to receive the key exchange request
-
-      // Test 6.4: verify_fingerprint
-      const verifyResult = await this.testEvent(
-        aliceSocket,
-        "verify_fingerprint",
+      // Test 6: Update Bob's key
+      const updateBobResult = await this.testEvent(
+        this.sockets.bob,
+        "update_e2ee_key",
         {
           publicKey: bobPublicKey,
-          expectedFingerprint: bobFingerprint,
+          keyType: "ecdh",
         }
       );
-      this.testResults.push({
-        test: "verify_fingerprint",
-        success: verifyResult.success,
-        matches: verifyResult.data?.data?.matches,
-        duration: verifyResult.duration,
-      });
+      this.testResults.push(updateBobResult);
 
-      await this.delay(1000);
+      await this.delay(2000);
 
-      // 7. Test broadcast events
-      this.log("\n7. Testing broadcast events...", null, "info");
+      // Test 7: Enable E2EE for Alice
+      const enableAliceResult = await this.testEvent(
+        this.sockets.alice,
+        "toggle_e2ee",
+        { enabled: true }
+      );
+      this.testResults.push(enableAliceResult);
 
-      // Note: These tests require manual verification since we need
-      // to see if events are being broadcast correctly
-      this.testResults.push({
-        test: "broadcast_events_initialized",
-        success: true,
-        note: "Broadcast event handlers registered (check logs)",
-      });
+      // Test 8: Enable E2EE for Bob
+      const enableBobResult = await this.testEvent(
+        this.sockets.bob,
+        "toggle_e2ee",
+        { enabled: true }
+      );
+      this.testResults.push(enableBobResult);
 
-      // 8. Test encrypted message sending
-      this.log("\n8. Testing encrypted message functionality...", null, "info");
+      await this.delay(3000);
 
-      // First create a test room or get existing room
-      // For now, we'll test the socket event
-      const testCiphertext = crypto.randomBytes(32).toString("base64");
-      const testIv = crypto.randomBytes(12).toString("base64");
+      // ==================== PHASE 4: KEY EXCHANGE ====================
+      console.log("\n📋 PHASE 4: KEY EXCHANGE");
+      console.log("-".repeat(50));
 
-      // Test 8.1: send_encrypted_message (without actual room)
-      const sendEncryptedResult = await this.testEvent(
-        aliceSocket,
-        "send_encrypted_message",
-        {
-          roomId: "test-room-123", // Mock room ID
-          ciphertext: testCiphertext,
-          iv: testIv,
-          keyId: fingerprint,
+      // Test 9: Alice requests Bob's key
+      const requestKeyResult = await this.testEvent(
+        this.sockets.alice,
+        "request_e2ee_key",
+        { userId: this.bobId }
+      );
+      this.testResults.push(requestKeyResult);
+
+      // Test 10: Check Bob's E2EE status
+      const checkStatusResult = await this.testEvent(
+        this.sockets.alice,
+        "check_e2ee_status",
+        { userId: this.bobId }
+      );
+      this.testResults.push(checkStatusResult);
+
+      // Test 11: Initiate key exchange
+      const initiateExchangeResult = await this.testEvent(
+        this.sockets.alice,
+        "initiate_key_exchange",
+        { peerId: this.bobId }
+      );
+      this.testResults.push(initiateExchangeResult);
+
+      await this.delay(3000);
+
+      // ==================== PHASE 5: ENCRYPTED MESSAGING ====================
+      console.log("\n📋 PHASE 5: ENCRYPTED MESSAGING");
+      console.log("-".repeat(50));
+
+      if (!this.roomId) {
+        console.log(
+          `\n⚠️  SKIPPING encrypted messaging tests - no room available`
+        );
+        console.log(`💡 Please check room creation above`);
+      } else {
+        console.log(
+          `\n📝 Testing encrypted messaging with room: ${this.roomId}`
+        );
+
+        // Test 12: Kiểm tra E2EE access trước
+        console.log(`\n🔐 Checking E2EE access for room ${this.roomId}...`);
+        const checkAccessResult = await this.testEvent(
+          this.sockets.alice,
+          "check_e2ee_status",
+          { userId: this.bobId }
+        );
+
+        if (checkAccessResult.success && checkAccessResult.data.canEncrypt) {
+          console.log(`✅ Both users have E2EE enabled and can encrypt`);
+        } else {
+          console.log(`❌ E2EE not properly enabled:`, checkAccessResult.data);
+        }
+
+        // Test 13: Try to send encrypted message với cấu trúc đơn giản hơn
+        const ciphertext = crypto.randomBytes(32).toString("base64");
+        const iv = crypto.randomBytes(12).toString("base64");
+
+        console.log(`\n🔐 Preparing encrypted message...`);
+
+        const encryptedMsgData = {
+          roomId: this.roomId,
+          ciphertext: ciphertext,
+          iv: iv,
+          keyId: "TEST1234", // Sử dụng key ID đơn giản
           algorithm: "AES-GCM-256",
+          // Thêm metadata đơn giản
+          metadata: JSON.stringify({
+            test: true,
+            timestamp: Date.now(),
+            sender: this.aliceId,
+            messageType: "text",
+          }),
+        };
+
+        console.log(`📤 Sending encrypted message...`);
+        const encryptedMsgResult = await this.testEvent(
+          this.sockets.alice,
+          "send_encrypted_message",
+          encryptedMsgData
+        );
+        this.testResults.push(encryptedMsgResult);
+
+        // Nếu thất bại, thử alternative approach
+        if (!encryptedMsgResult.success) {
+          console.log(`\n🔄 Trying alternative approach...`);
+
+          // Thử gửi message bình thường trước để verify room access
+          try {
+            const normalMessage = {
+              roomId: this.roomId,
+              content: "Test normal message before encrypted",
+              type: "text",
+            };
+
+            const normalResult = await this.makeAPIRequest(
+              "post",
+              "/users/message",
+              normalMessage,
+              this.tokens.alice
+            );
+
+            console.log(`✅ Normal message sent:`, normalResult);
+          } catch (error) {
+            console.log(`❌ Normal message also failed:`, error.message);
+          }
         }
+
+        // Test 14: Verify fingerprint
+        const verifyResult = await this.testEvent(
+          this.sockets.alice,
+          "verify_fingerprint",
+          {
+            publicKey: alicePublicKey,
+            expectedFingerprint: "TEST1234",
+          }
+        );
+        this.testResults.push(verifyResult);
+
+        // Test 15: Get encrypted messages from room - với timeout ngắn hơn
+        console.log(`\n📨 Attempting to get encrypted messages...`);
+        const getMessagesPromise = this.testEvent(
+          this.sockets.alice,
+          "get_encrypted_messages",
+          {
+            roomId: this.roomId,
+            limit: 5,
+          },
+          10000 // 10 seconds timeout
+        );
+
+        // Thêm timeout handler riêng
+        const getMessagesResult = await Promise.race([
+          getMessagesPromise,
+          new Promise((resolve) => {
+            setTimeout(() => {
+              resolve({
+                test: "get_encrypted_messages",
+                success: false,
+                error: "Handler not implemented or timeout",
+                duration: 10000,
+              });
+            }, 10000);
+          }),
+        ]);
+
+        this.testResults.push(getMessagesResult);
+      }
+
+      await this.delay(2000);
+
+      // ==================== PHASE 6: CLEANUP ====================
+      console.log("\n📋 PHASE 6: CLEANUP");
+      console.log("-".repeat(50));
+
+      // Test 16: Disable E2EE for Alice
+      const disableAliceResult = await this.testEvent(
+        this.sockets.alice,
+        "toggle_e2ee",
+        { enabled: false }
       );
-      this.testResults.push({
-        test: "send_encrypted_message",
-        success: sendEncryptedResult.success,
-        // This might fail if room doesn't exist, but we're testing the handler
-        duration: sendEncryptedResult.duration,
-        note: "Room validation might fail - testing handler only",
-      });
+      this.testResults.push(disableAliceResult);
+
+      // Test 17: Disable E2EE for Bob
+      const disableBobResult = await this.testEvent(
+        this.sockets.bob,
+        "toggle_e2ee",
+        { enabled: false }
+      );
+      this.testResults.push(disableBobResult);
 
       await this.delay(1000);
 
-      // 9. Test cleanup operations
-      this.log("\n9. Testing cleanup operations...", null, "info");
-
-      // Test 9.1: delete_e2ee_key (if we have keys)
-      if (keysResult.data?.data?.keys?.length > 0) {
-        const keyToDelete = keysResult.data.data.keys[0];
-        if (keyToDelete.fingerprint !== fingerprint) {
-          // Don't delete active key
-          const deleteResult = await this.testEvent(
-            aliceSocket,
-            "delete_e2ee_key",
-            {
-              fingerprint: keyToDelete.fingerprint,
-            }
-          );
-          this.testResults.push({
-            test: "delete_e2ee_key",
-            success: deleteResult.success,
-            fingerprint: keyToDelete.fingerprint,
-            duration: deleteResult.duration,
-          });
-          await this.delay(1000);
-        }
-      }
-
-      // Test 9.2: toggle_e2ee (disable)
-      const disableResult = await this.testEvent(aliceSocket, "toggle_e2ee", {
-        enabled: false,
-      });
-      this.testResults.push({
-        test: "toggle_e2ee (disable)",
-        success: disableResult.success,
-        isEnabled: disableResult.data?.data?.e2eeEnabled === false,
-        duration: disableResult.duration,
-      });
+      // ==================== DISCONNECT ====================
+      console.log("\n🔌 Disconnecting sockets...");
+      this.sockets.alice.disconnect();
+      this.sockets.bob.disconnect();
 
       await this.delay(1000);
 
-      // 10. Disconnect and cleanup
-      this.log("\n10. Disconnecting sockets...", null, "info");
-
-      // Disconnect sockets
-      for (const [username, socket] of Object.entries(this.userSockets)) {
-        socket.disconnect();
-        this.log(`Disconnected: ${username}`, null, "success");
-      }
-
-      await this.delay(1000);
-
-      // 11. Print summary
-      this.printSummary();
+      // ==================== PRINT RESULTS ====================
+      this.printResults();
     } catch (error) {
-      this.log(`Test suite failed`, error.message, "error");
-      this.log(`Stack trace`, error.stack, "error");
+      console.error("\n❌ TEST FAILED:", error.message);
+      console.error("Stack:", error.stack);
 
-      // Cleanup on error
-      for (const [username, socket] of Object.entries(this.userSockets)) {
+      Object.values(this.sockets).forEach((socket) => {
         if (socket && socket.connected) {
           socket.disconnect();
         }
-      }
+      });
 
-      this.printSummary();
-      process.exit(1);
+      this.printResults();
+      throw error;
     }
   }
 
@@ -682,261 +713,151 @@ class E2EESocketTest {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  printSummary() {
-    console.log("\n" + "=".repeat(80));
-    console.log("📊 E2EE SOCKET HANDLER TEST SUMMARY");
-    console.log("=".repeat(80));
+  printResults() {
+    console.log("\n" + "=".repeat(70));
+    console.log("📊 E2EE BACKEND TEST RESULTS");
+    console.log("=".repeat(70));
 
-    const totalTests = this.testResults.length;
-    const passedTests = this.testResults.filter((r) => r.success).length;
-    const failedTests = totalTests - passedTests;
+    const total = this.testResults.length;
+    const passed = this.testResults.filter((t) => t.success).length;
+    const failed = total - passed;
 
-    console.log(`Total tests: ${totalTests}`);
-    console.log(`✅ Passed: ${passedTests}`);
-    console.log(`❌ Failed: ${failedTests}`);
+    console.log(`Total tests: ${total}`);
+    console.log(`✅ Passed: ${passed}`);
+    console.log(`❌ Failed: ${failed}`);
+    console.log(
+      `📈 Success rate: ${total > 0 ? ((passed / total) * 100).toFixed(1) : 0}%`
+    );
 
-    if (totalTests > 0) {
-      console.log(
-        `📈 Success rate: ${((passedTests / totalTests) * 100).toFixed(1)}%`
-      );
-    }
-
-    console.log("\n📋 Test Details:");
-    console.log("-".repeat(80));
-
+    console.log("\n📋 Detailed Results:");
     this.testResults.forEach((result, index) => {
-      const status = result.success ? "✅" : "❌";
-      const duration = result.duration ? `(${result.duration}ms)` : "";
-      console.log(`${index + 1}. ${status} ${result.test} ${duration}`);
+      const icon = result.success ? "✅" : "❌";
+      const time = result.duration ? `${result.duration}ms` : "";
+      console.log(`${index + 1}. ${icon} ${result.test} ${time}`);
 
       if (!result.success) {
-        console.log(`   ⚠️  ${result.error || "Failed"}`);
-      }
+        if (result.error === "Timeout") {
+          console.log(`   ⚠️  Timeout - Handler không phản hồi`);
+        } else if (result.data?.error) {
+          console.log(`   ❌ ${result.data.error}`);
+        } else if (result.error) {
+          console.log(`   ❌ ${result.error}`);
+        }
 
-      if (result.note) {
-        console.log(`   📝 ${result.note}`);
+        // Special handling for specific errors
+        if (result.test === "send_encrypted_message") {
+          console.log(`   🔍 Room ID: ${this.roomId}`);
+          console.log(`   💡 Check E2EE handler and room access`);
+        }
+
+        if (result.test === "get_encrypted_messages") {
+          console.log(`   ⚠️  Handler may not be implemented`);
+          console.log(
+            `   💡 Check if get_encrypted_messages exists in e2eeHandlers.js`
+          );
+        }
       }
     });
 
-    console.log("\n" + "=".repeat(80));
-    console.log("🎯 E2EE SOCKET FUNCTIONALITIES TESTED:");
-    console.log("=".repeat(80));
-    console.log("1. ✅ Socket connection & authentication");
-    console.log("2. ✅ Basic health check (health_check, ping)");
-    console.log("3. ✅ E2EE info retrieval (get_e2ee_info)");
-    console.log("4. ✅ Key management (update_e2ee_key, get_my_e2ee_keys)");
-    console.log("5. ✅ E2EE status management (toggle_e2ee)");
-    console.log("6. ✅ Key exchange (request_e2ee_key, initiate_key_exchange)");
-    console.log("7. ✅ Key verification (verify_fingerprint)");
-    console.log("8. ✅ Status checking (check_e2ee_status)");
-    console.log("9. ✅ Active key management (set_active_key)");
-    console.log("10. ✅ Encrypted messaging (send_encrypted_message)");
-    console.log("11. ✅ Key cleanup (delete_e2ee_key)");
-    console.log("12. ✅ Broadcast event handling");
-    console.log("13. ✅ Clean disconnection");
+    console.log("\n" + "=".repeat(70));
+    console.log("🔍 ROOT CAUSE ANALYSIS:");
+    console.log("=".repeat(70));
 
-    console.log("\n" + "=".repeat(80));
+    const sendEncryptedTest = this.testResults.find(
+      (t) => t.test === "send_encrypted_message"
+    );
+    const getEncryptedTest = this.testResults.find(
+      (t) => t.test === "get_encrypted_messages"
+    );
 
-    if (failedTests === 0) {
-      console.log("\n🎉 EXCELLENT! All E2EE socket handlers are working!");
-      console.log("🔒 Your E2EE implementation is production-ready.");
-      console.log("\n💡 Next steps:");
-      console.log("   1. Test with frontend client");
-      console.log("   2. Implement group E2EE");
-      console.log("   3. Add key rotation automation");
-      console.log("   4. Set up monitoring and alerts");
-    } else if (passedTests >= totalTests * 0.7) {
-      console.log("\n👍 GOOD! Most E2EE socket handlers are working!");
-      console.log("⚠️  Some tests failed - review the details above.");
-      console.log("\n🔧 To fix issues:");
-      console.log("   1. Check server logs for errors");
-      console.log("   2. Verify E2EE controller exports");
-      console.log("   3. Ensure socket handlers are registered correctly");
-      console.log("   4. Test individual failing events");
-    } else {
-      console.log("\n⚠️  WARNING! Multiple E2EE socket tests failed!");
-      console.log("🔧 Immediate actions required:");
-      console.log("   1. Review all failing tests above");
-      console.log("   2. Check socket handler registration");
-      console.log("   3. Verify E2EE controller functions");
-      console.log("   4. Test socket connection independently");
+    if (sendEncryptedTest && !sendEncryptedTest.success) {
+      console.log("\n🔐 ISSUE 1: send_encrypted_message FAILED");
+      console.log(
+        `   Error: ${sendEncryptedTest.data?.error || sendEncryptedTest.error}`
+      );
+      console.log(`   Room ID: ${this.roomId}`);
+      console.log(`\n💡 POSSIBLE CAUSES:`);
+      console.log(`   1. Room access permission issue`);
+      console.log(`   2. E2EE not properly enabled for both users`);
+      console.log(`   3. Handler checkE2EEAccess() returning false`);
+      console.log(`   4. Room doesn't exist or has wrong schema`);
+      console.log(`\n🔧 QUICK FIXES:`);
+      console.log(`   • Check server logs for "Access denied" details`);
+      console.log(
+        `   • Verify room exists: db.rooms.find({_id: ObjectId("${this.roomId}")})`
+      );
+      console.log(
+        `   • Check room members: db.rooms.findOne({_id: ObjectId("${this.roomId}")}, {members: 1})`
+      );
+      console.log(`   • Test with simple message first via API`);
     }
 
-    console.log("\n📝 Test Configuration:");
-    console.log(`   Server URL: ${SERVER_URL}`);
-    console.log(`   Keycloak URL: ${KEYCLOAK_URL}`);
-    console.log(
-      `   Test Users: ${TEST_USERS.map((u) => u.username).join(", ")}`
-    );
-    console.log("=".repeat(80));
+    if (getEncryptedTest && !getEncryptedTest.success) {
+      console.log("\n📨 ISSUE 2: get_encrypted_messages TIMEOUT");
+      console.log(`   Error: Handler not responding`);
+      console.log(`\n💡 POSSIBLE CAUSES:`);
+      console.log(`   1. Handler not implemented in e2eeHandlers.js`);
+      console.log(`   2. Handler exists but not registered properly`);
+      console.log(`   3. Database query hanging`);
+      console.log(`\n🔧 QUICK FIXES:`);
+      console.log(`   • Check if get_encrypted_messages handler exists`);
+      console.log(`   • Check server startup logs for handler registration`);
+      console.log(`   • Reduce timeout or implement the handler`);
+    }
+
+    console.log("\n" + "=".repeat(70));
+    console.log("🔧 RECOMMENDED ACTIONS:");
+    console.log("=".repeat(70));
+
+    console.log(`
+1. CHECK SERVER LOGS:
+   tail -f server.log | grep -E "(E2EE|send_encrypted|access)"
+
+2. CHECK DATABASE:
+   mongo
+   use chat-app
+   db.rooms.find({_id: ObjectId("${this.roomId}")})
+   db.e2eekeys.find({keycloakId: "${this.aliceId}"})
+
+3. TEST MANUALLY:
+   curl -X POST http://localhost:3001/users/message \\
+     -H "Authorization: Bearer ${this.tokens.alice?.substring(0, 50)}..." \\
+     -H "Content-Type: application/json" \\
+     -d '{
+       "roomId": "${this.roomId}",
+       "content": "Test message",
+       "type": "text"
+     }'
+
+4. CHECK HANDLER IMPLEMENTATION:
+   Look for sendEncryptedMessage() in controllers/e2eeController.js
+   Look for checkE2EEAccess() function
+
+5. VERIFY SOCKET HANDLERS:
+   Check e2eeHandlers.js for send_encrypted_message handler
+   Check if callback is being called
+    `);
+
+    console.log("=".repeat(70));
+    console.log("🏁 Test completed!");
   }
 }
 
-// Quick test script
-async function quickTest() {
-  console.log("⚡ Quick E2EE Socket Test");
-  console.log("=".repeat(60));
-
-  const test = new E2EESocketTest();
+// Run the complete test
+async function main() {
+  const test = new E2EECompleteTest();
 
   try {
-    // 1. Check server health
-    console.log("\n1. Testing server connectivity...");
-    try {
-      const health = await axios.get(`${SERVER_URL}/health`, { timeout: 3000 });
-      console.log("✅ Server health:", health.data.status || "OK");
-    } catch (error) {
-      console.log("❌ Server not responding:", error.message);
-      return;
-    }
-
-    // 2. Get token
-    console.log("\n2. Getting token...");
-    let token;
-    try {
-      token = await test.getToken("hoangngan", "1234");
-      if (!token) {
-        console.log("❌ Cannot get token");
-        return;
-      }
-      console.log("✅ Token obtained");
-    } catch (error) {
-      console.log("❌ Token error:", error.message);
-      return;
-    }
-
-    // 3. Test socket connection
-    console.log("\n3. Testing socket connection...");
-    const socket = io(SERVER_URL, {
-      auth: { token },
-      transports: ["websocket", "polling"],
-      reconnection: false,
-      timeout: 10000,
-    });
-
-    return new Promise((resolve) => {
-      socket.on("connect", () => {
-        console.log("✅ Socket connected!");
-        console.log(`   Socket ID: ${socket.id}`);
-
-        // Test sequence
-        const tests = [
-          { event: "ping", data: null },
-          { event: "get_e2ee_info", data: null },
-          { event: "get_my_e2ee_keys", data: null },
-        ];
-
-        let currentTest = 0;
-
-        const runNextTest = () => {
-          if (currentTest >= tests.length) {
-            console.log("\n🎉 All quick tests passed!");
-            socket.disconnect();
-            resolve();
-            return;
-          }
-
-          const test = tests[currentTest];
-          console.log(`\n   Testing ${test.event}...`);
-
-          socket.emit(test.event, test.data, (response) => {
-            if (response?.success || response?.status === "success") {
-              console.log(`   ✅ ${test.event}: OK`);
-
-              if (test.event === "get_e2ee_info" && response.data) {
-                console.log(`      E2EE Enabled: ${response.data.e2eeEnabled}`);
-                console.log(
-                  `      Has Active Key: ${!!response.data.currentKey}`
-                );
-              }
-
-              if (test.event === "get_my_e2ee_keys" && response.data) {
-                console.log(
-                  `      Total Keys: ${response.data.keys?.length || 0}`
-                );
-              }
-            } else {
-              console.log(
-                `   ❌ ${test.event}: Failed`,
-                response?.error || response?.message
-              );
-            }
-
-            currentTest++;
-            setTimeout(runNextTest, 500);
-          });
-        };
-
-        runNextTest();
-      });
-
-      socket.on("connect_error", (error) => {
-        console.log("❌ Socket connection error:", error.message);
-        console.log("\n💡 Possible issues:");
-        console.log("   - Check if server is running on port 3001");
-        console.log("   - Verify token is valid (not expired)");
-        console.log("   - Check CORS settings in socket server");
-        console.log("   - Ensure Keycloak is running");
-        resolve();
-      });
-
-      socket.on("error", (error) => {
-        console.log("❌ Socket error:", error);
-      });
-
-      setTimeout(() => {
-        if (!socket.connected) {
-          console.log("⏰ Socket connection timeout");
-          resolve();
-        }
-      }, 15000);
-    });
+    await test.runCompleteTest();
   } catch (error) {
-    console.log("❌ Quick test failed:", error.message);
+    console.error("❌ Complete test failed:", error.message);
+    process.exit(1);
   }
-}
-
-// Main execution
-async function main() {
-  console.log("🔧 E2EE Socket Testing Tool");
-  console.log("=".repeat(60));
-  console.log("Server URL:", SERVER_URL);
-  console.log("Keycloak URL:", KEYCLOAK_URL);
-  console.log("Test Users:", TEST_USERS.map((u) => u.username).join(", "));
-
-  const readline = require("readline").createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  readline.question(
-    "\nChoose test mode:\n1. Full comprehensive test (recommended)\n2. Quick connectivity test\n3. Exit\n> ",
-    async (choice) => {
-      if (choice === "1") {
-        console.log("\n🚀 Running comprehensive E2EE socket test...");
-        console.log("=".repeat(60));
-        const test = new E2EESocketTest();
-        await test.runTests();
-      } else if (choice === "2") {
-        console.log("\n⚡ Running quick connectivity test...");
-        console.log("=".repeat(60));
-        await quickTest();
-      } else {
-        console.log("Exiting...");
-      }
-
-      readline.close();
-      process.exit(0);
-    }
-  );
 }
 
 // Run if called directly
 if (require.main === module) {
-  main().catch((error) => {
-    console.error("❌ Test execution failed:", error);
-    process.exit(1);
-  });
+  main();
 }
 
-module.exports = { E2EESocketTest, quickTest };
+module.exports = E2EECompleteTest;

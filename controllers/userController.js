@@ -718,22 +718,54 @@ const formatMessageTime = (timestamp) => {
 */
 
 // POST /users/room/create
+// SỬA HÀM createRoom
 exports.createRoom = catchAsync(async (req, res) => {
   const { name, memberKeycloakIds, isGroup = false, topic } = req.body;
+  const currentUserKeycloakId = req.user?.keycloakId; // Lấy keycloakId từ token
 
-  const members = await User.find({
-    keycloakId: { $in: memberKeycloakIds },
-  }).select("_id");
-
-  const newRoom = await Room.create({
-    name: isGroup ? name : null,
+  console.log("🏗️ Creating room:", {
+    name,
+    memberKeycloakIds,
     isGroup,
-    members,
-    createdBy: req.user._id,
+    currentUser: currentUserKeycloakId,
+  });
+
+  // VALIDATION
+  if (!memberKeycloakIds || !Array.isArray(memberKeycloakIds)) {
+    return res.status(400).json({
+      status: "error",
+      message: "memberKeycloakIds (array) is required",
+    });
+  }
+
+  // THÊM current user vào members nếu chưa có
+  const allMembers = [
+    ...new Set([...memberKeycloakIds, currentUserKeycloakId]),
+  ];
+
+  console.log("👥 All members for room:", allMembers);
+
+  // TẠO ROOM MỚI - TRỰC TIẾP VỚI KEYCLOAKID
+  const newRoom = await Room.create({
+    name: name || null,
+    isGroup: isGroup,
+    members: allMembers, // Lưu trực tiếp keycloakIds
+    createdBy: currentUserKeycloakId,
     topic: topic || null,
   });
 
-  res.status(201).json({ status: "success", data: newRoom });
+  console.log("✅ Room created successfully:", {
+    roomId: newRoom._id,
+    name: newRoom.name,
+    members: newRoom.members,
+    isGroup: newRoom.isGroup,
+  });
+
+  res.status(201).json({
+    status: "success",
+    message: "Room created successfully",
+    data: newRoom,
+  });
 });
 
 // POST users/room/creatGroup
