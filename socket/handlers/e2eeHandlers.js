@@ -119,61 +119,150 @@ function registerE2EEHandlers(socket, io) {
     callback,
     options = {}
   ) => {
+    console.log(
+      `🎯 [callController - ${username}] Calling ${controllerFn} with:`,
+      {
+        roomId: reqData.roomId,
+        conversation_id: reqData.conversation_id,
+        from: reqData.from,
+        to: reqData.to,
+        hasCiphertext: !!reqData.ciphertext,
+        hasIV: !!reqData.iv,
+        callbackProvided: !!callback,
+      }
+    );
+
     try {
-      if (!e2eeController || !e2eeController[controllerFn]) {
-        const errorMsg = `Controller function '${controllerFn}' not available`;
-        console.error(`❌ [${username}] ${errorMsg}`);
+      // Kiểm tra controller tồn tại
+      if (!e2eeController) {
+        console.error(`❌ [${username}] e2eeController is NULL!`);
         if (callback) {
           callback({
             success: false,
-            error: errorMsg,
+            error: "E2EE controller not loaded",
           });
         }
         return;
       }
 
+      // Kiểm tra function tồn tại
+      if (!e2eeController[controllerFn]) {
+        console.error(`❌ [${username}] Function ${controllerFn} not found!`);
+        console.error(`Available functions:`, Object.keys(e2eeController));
+        if (callback) {
+          callback({
+            success: false,
+            error: `Function ${controllerFn} not available in controller`,
+          });
+        }
+        return;
+      }
+
+      console.log(`✅ [${username}] Controller and function verified`);
+
+      // Tạo mock request với đầy đủ data
       const mockReq = {
         user: { keycloakId },
         body: reqData,
-        app: { get: (key) => (key === "io" ? io : null) },
+        app: {
+          get: (key) => {
+            if (key === "io") {
+              console.log(`📡 [${username}] Returning io instance`);
+              return io;
+            }
+            return null;
+          },
+        },
+        // Thêm các field khác nếu controller cần
+        params: {},
+        query: {},
       };
 
-      const mockRes = {
-        status: () => mockRes,
-        json: (response) => {
-          if (callback) {
-            if (response.status === "success" || response.success === true) {
-              // Execute post-success actions if provided
-              if (
-                options.onSuccess &&
-                typeof options.onSuccess === "function"
-              ) {
-                options.onSuccess(response);
-              }
+      console.log(`📦 [${username}] Request data ready:`, {
+        roomId: mockReq.body.roomId,
+        conversation_id: mockReq.body.conversation_id,
+        from: mockReq.body.from,
+        to: mockReq.body.to,
+      });
 
-              callback({
-                success: true,
+      // Tạo mock response với logging
+      const mockRes = {
+        status: (statusCode) => {
+          console.log(`📊 [${username}] Controller status code: ${statusCode}`);
+          return {
+            json: (response) => {
+              console.log(`📥 [${username}] Controller response:`, {
+                statusCode,
+                success:
+                  response.status === "success" || response.success === true,
                 message: response.message,
-                data: response.data || response,
+                hasData: !!response.data,
+                hasCallback: !!callback,
               });
-            } else {
-              callback({
-                success: false,
-                error: response.message || response.error || "Operation failed",
-                data: response.data,
-              });
-            }
-          }
+
+              // Gọi callback nếu có
+              if (callback && typeof callback === "function") {
+                console.log(`📤 [${username}] Executing callback`);
+                if (
+                  response.status === "success" ||
+                  response.success === true
+                ) {
+                  callback({
+                    success: true,
+                    message: response.message,
+                    data: response.data || response,
+                  });
+                } else {
+                  callback({
+                    success: false,
+                    error:
+                      response.message || response.error || "Operation failed",
+                    data: response.data,
+                  });
+                }
+              } else {
+                console.warn(`⚠️ [${username}] No callback to execute`);
+              }
+            },
+          };
         },
       };
 
-      await e2eeController[controllerFn](mockReq, mockRes);
+      console.log(`🚀 [${username}] Executing controller: ${controllerFn}`);
+
+      try {
+        // Gọi controller
+        const result = await e2eeController[controllerFn](mockReq, mockRes);
+        console.log(
+          `✅ [${username}] Controller ${controllerFn} execution completed`
+        );
+
+        // Nếu controller trả về promise nhưng không gọi res.json()
+        if (result && !mockRes.called) {
+          console.warn(
+            `⚠️ [${username}] Controller didn't call res.json() directly`
+          );
+        }
+      } catch (controllerError) {
+        console.error(
+          `❌ [${username}] Controller execution error:`,
+          controllerError.message
+        );
+        console.error(controllerError.stack);
+
+        if (callback) {
+          callback({
+            success: false,
+            error: `Controller error: ${controllerError.message}`,
+          });
+        }
+      }
     } catch (err) {
       console.error(
-        `❌ [${username}] Controller error for ${controllerFn}:`,
+        `❌ [${username}] Error in callController wrapper:`,
         err.message
       );
-      console.error("Stack:", err.stack);
+      console.error(err.stack);
 
       if (callback) {
         callback({
@@ -247,46 +336,56 @@ function registerE2EEHandlers(socket, io) {
 
   // 2. get_e2ee_info - Get E2EE information
   // 2. get_e2ee_info - Get E2EE information
-  socket.on("get_e2ee_info", async (callback) => {
-    console.log(`📤 [e2eeHandlers - ${username}] get_e2ee_info received`);
+  // socket/handlers/e2eeHandlers.js - SỬA HÀM get_e2ee_info
 
-    // ✅ FIX: Luôn trả về response ngay cả khi không có callback
+  socket.on("get_e2ee_info", async (data, callback) => {
+    console.log(
+      `📤 [e2eeHandlers - ${username}] get_e2ee_info received`,
+      data || ""
+    );
+
+    // Helper để send response
     const sendResponse = (response) => {
+      console.log(`📤 [${username}] Sending E2EE info response:`, {
+        success: response.success,
+        hasCallback: !!callback,
+        hasResponseId: !!(data && data.responseId),
+      });
+
+      // Ưu tiên callback nếu có
       if (callback && typeof callback === "function") {
         callback(response);
-        console.log("22222", response);
-      } else {
-        // Nếu không có callback, emit response qua socket
-        console.warn(
-          `⚠️ [${username}] No callback, emitting response via socket`
+      }
+      // Nếu có responseId, emit event với ID đó
+      else if (data && data.responseId) {
+        console.log(
+          `📤 [${username}] Emitting response with ID: ${data.responseId}`
         );
+        socket.emit(`e2ee_info_response_${data.responseId}`, response);
+      }
+      // Nếu không có gì, emit event mặc định
+      else {
+        console.warn(`⚠️ [${username}] No callback, emitting default response`);
         socket.emit("e2ee_info_response", response);
       }
     };
 
-    // If controller not available, return debug response
-    if (!e2eeController || !e2eeController.getE2EEInfo) {
-      console.warn(
-        `⚠️ [${username}] Controller not available, sending debug response`
-      );
-      const debugResponse = {
-        success: true,
-        data: {
-          keycloakId: keycloakId,
-          username: username,
-          e2eeEnabled: false,
-          message: "E2EE controller not available - debug mode",
-          timestamp: new Date().toISOString(),
-          source: "e2eeHandlers-debug",
-          handlerVersion: "2.0",
-        },
-      };
-      sendResponse(debugResponse);
-      return;
-    }
-
-    // Dùng controller
     try {
+      if (!e2eeController || !e2eeController.getE2EEInfo) {
+        console.warn(`⚠️ [${username}] Controller not available`);
+        sendResponse({
+          success: true,
+          data: {
+            keycloakId,
+            username,
+            e2eeEnabled: false,
+            message: "E2EE controller not available",
+            timestamp: new Date().toISOString(),
+          },
+        });
+        return;
+      }
+
       const mockReq = {
         user: { keycloakId },
         body: {},
@@ -295,12 +394,18 @@ function registerE2EEHandlers(socket, io) {
 
       const mockRes = {
         status: () => mockRes,
-        json: (response) => {
-          sendResponse({
-            success: response.status === "success" || response.success === true,
-            message: response.message,
-            data: response.data || response,
-          });
+        json: (controllerResponse) => {
+          // Chuẩn hóa response từ controller
+          const normalizedResponse = {
+            success:
+              controllerResponse.status === "success" ||
+              controllerResponse.success === true,
+            message: controllerResponse.message,
+            data: controllerResponse.data || controllerResponse,
+            timestamp: new Date().toISOString(),
+          };
+
+          sendResponse(normalizedResponse);
         },
       };
 
@@ -310,6 +415,7 @@ function registerE2EEHandlers(socket, io) {
       sendResponse({
         success: false,
         error: `Server error: ${err.message}`,
+        timestamp: new Date().toISOString(),
       });
     }
   });
@@ -359,12 +465,17 @@ function registerE2EEHandlers(socket, io) {
 
   // 5. update_e2ee_key - Cập nhật E2EE public key
   socket.on("update_e2ee_key", async (data, callback) => {
-    console.log(`🔄 [e2eeHandlers - ${username}] update_e2ee_key received:`, {
-      ...data,
-      publicKey: data.publicKey
-        ? `${data.publicKey.substring(0, 20)}...`
-        : "none",
-    });
+    console.log(
+      `✅ [e2eeHandlers - ${username}] confirm_key_exchange received:`,
+      {
+        ...data,
+        publicKey: data.publicKey
+          ? typeof data.publicKey === "string"
+            ? `${data.publicKey.substring(0, 20)}...`
+            : `[Object: ${typeof data.publicKey}]`
+          : "none",
+      }
+    );
 
     if (!validateCallback(callback)) return;
     if (!validateFields(data, ["publicKey"], callback)) return;
@@ -504,62 +615,192 @@ function registerE2EEHandlers(socket, io) {
   });
 
   // 11. confirm_key_exchange - Xác nhận key exchange
+  // handlers/socket/e2eeHandlers.js - SỬA handler confirm_key_exchange
+  // 11. confirm_key_exchange - Xác nhận key exchange (FIXED VERSION)
   socket.on("confirm_key_exchange", async (data, callback) => {
     console.log(
       `✅ [e2eeHandlers - ${username}] confirm_key_exchange received:`,
-      {
-        ...data,
-        publicKey: data.publicKey
-          ? `${data.publicKey.substring(0, 20)}...`
-          : "none",
-      }
+      data
     );
 
-    if (!validateCallback(callback)) return;
-    if (
-      !validateFields(
-        data,
-        ["exchangeId", "peerId", "publicKey", "fingerprint"],
-        callback
-      )
-    )
-      return;
+    // DEBUG chi tiết
+    console.log("🔍 [DEBUG] Full data object:", JSON.stringify(data, null, 2));
+    console.log("🔍 [DEBUG] publicKey type:", typeof data?.publicKey);
 
-    const verified = data.verified !== undefined ? data.verified : false;
-
-    const onSuccess = (response) => {
-      // Send confirmation to peer if verified
-      if (verified) {
-        io.to(data.peerId).emit("key_exchange_confirmed", {
-          from: keycloakId,
-          username: username,
-          exchangeId: data.exchangeId,
-          fingerprint: data.fingerprint,
-          timestamp: new Date(),
-          source: "e2eeHandlers",
-          handlerVersion: "2.0",
-        });
+    if (data?.publicKey) {
+      if (typeof data.publicKey === "string") {
+        console.log("🔍 [DEBUG] publicKey length:", data.publicKey.length);
         console.log(
-          `📨 [${username}] Sent key exchange confirmation to ${data.peerId}`
+          "🔍 [DEBUG] publicKey first 200 chars:",
+          data.publicKey.substring(0, 200)
         );
+      } else if (typeof data.publicKey === "object") {
+        console.log(
+          "🔍 [DEBUG] publicKey object keys:",
+          Object.keys(data.publicKey)
+        );
+      }
+    }
+
+    const sendResponse = (response) => {
+      if (callback && typeof callback === "function") {
+        callback(response);
+      } else {
+        socket.emit("update_e2ee_key_response", response);
       }
     };
 
-    await callController(
-      "confirmE2EEKeyExchange",
-      {
-        exchangeId: data.exchangeId,
-        peerId: data.peerId,
-        publicKey: data.publicKey,
-        fingerprint: data.fingerprint,
-        verified: verified,
-      },
-      callback,
-      { onSuccess }
-    );
+    try {
+      // Kiểm tra dữ liệu đầu vào
+      if (!data || !data.publicKey) {
+        const errorMsg = "publicKey is required";
+        console.error(`❌ [${username}] Validation error: ${errorMsg}`);
+        sendResponse({
+          success: false,
+          error: errorMsg,
+          code: "MISSING_PUBLIC_KEY",
+        });
+        return;
+      }
+
+      let publicKey = data.publicKey;
+      const keyType = data.keyType || "ecdh";
+
+      // Xử lý publicKey để đảm bảo là string JSON hợp lệ
+      if (typeof publicKey === "object" && publicKey !== null) {
+        console.log("🔄 Converting object to JSON string...");
+        try {
+          publicKey = JSON.stringify(publicKey);
+          console.log(
+            "✅ Converted object to string, length:",
+            publicKey.length
+          );
+        } catch (e) {
+          console.error("❌ Failed to stringify object:", e);
+          sendResponse({
+            success: false,
+            error: "Invalid public key format (not JSON serializable)",
+            code: "INVALID_KEY_FORMAT",
+          });
+          return;
+        }
+      }
+
+      // Kiểm tra xem publicKey có phải là JSON hợp lệ không
+      if (typeof publicKey === "string") {
+        // Loại bỏ các ký tự đặc biệt có thể gây lỗi
+        publicKey = publicKey.trim();
+
+        // Kiểm tra xem có phải JSON hợp lệ không
+        if (publicKey.startsWith("{") && publicKey.endsWith("}")) {
+          try {
+            JSON.parse(publicKey); // Test parse
+            console.log("✅ Public key is valid JSON");
+          } catch (e) {
+            console.error("❌ Public key is not valid JSON:", e.message);
+            sendResponse({
+              success: false,
+              error: "Public key is not valid JSON format",
+              code: "INVALID_JSON",
+            });
+            return;
+          }
+        } else {
+          console.warn(
+            "⚠️ Public key doesn't look like JSON, but will process as string"
+          );
+        }
+      } else {
+        console.error(
+          "❌ Public key is not a string after processing:",
+          typeof publicKey
+        );
+        sendResponse({
+          success: false,
+          error: "Public key must be a string",
+          code: "KEY_NOT_STRING",
+        });
+        return;
+      }
+
+      // Kiểm tra độ dài tối thiểu
+      if (publicKey.length < 50) {
+        console.error("❌ Public key too short:", publicKey.length);
+        sendResponse({
+          success: false,
+          error: "Public key is too short (may be corrupted)",
+          code: "KEY_TOO_SHORT",
+          debug: { length: publicKey.length },
+        });
+        return;
+      }
+
+      console.log("🔍 [FINAL] Public key details:", {
+        type: typeof publicKey,
+        length: publicKey.length,
+        first100: publicKey.substring(0, 100),
+        last100: publicKey.substring(publicKey.length - 100),
+      });
+
+      // Gọi controller
+      if (!e2eeController || !e2eeController.updateE2EEPublicKey) {
+        console.error("❌ E2EE controller not available");
+        sendResponse({
+          success: false,
+          error: "E2EE controller not available",
+          code: "CONTROLLER_UNAVAILABLE",
+        });
+        return;
+      }
+
+      const mockReq = {
+        user: { keycloakId },
+        body: {
+          publicKey: publicKey,
+          keyType: keyType,
+          debug: data.debug || false,
+        },
+        app: { get: (key) => (key === "io" ? io : null) },
+      };
+
+      const mockRes = {
+        status: (code) => ({
+          json: (response) => {
+            console.log(`📥 [${username}] Controller response:`, {
+              statusCode: code,
+              response: response,
+            });
+
+            // Chuẩn hóa response format
+            const normalizedResponse = {
+              success:
+                response.status === "success" || response.success === true,
+              message:
+                response.message || response.error || "Operation completed",
+              data: response.data || null,
+              code:
+                response.code ||
+                (response.status === "success" ? "SUCCESS" : "ERROR"),
+            };
+
+            sendResponse(normalizedResponse);
+          },
+        }),
+      };
+
+      await e2eeController.updateE2EEPublicKey(mockReq, mockRes);
+      console.log("✅ confirm_key_exchange processed successfully");
+    } catch (error) {
+      console.error("❌ Error in confirm_key_exchange handler:", error);
+      sendResponse({
+        success: false,
+        error: error.message,
+        code: "HANDLER_ERROR",
+        stack: error.stack,
+      });
+    }
   });
 
-  // 12. send_encrypted_message - Gửi tin nhắn mã hóa
   socket.on("send_encrypted_message", async (data, callback) => {
     console.log(
       `🔐 [e2eeHandlers - ${username}] send_encrypted_message received:`,
@@ -572,8 +813,40 @@ function registerE2EEHandlers(socket, io) {
       }
     );
 
-    if (!validateCallback(callback)) return;
-    if (!validateFields(data, ["roomId", "ciphertext", "iv"], callback)) return;
+    console.log(`🔍 [DEBUG START] Handler execution start`);
+    console.log(`🔍 Username: ${username}, keycloakId: ${keycloakId}`);
+    console.log(`🔍 callController function exists:`, typeof callController);
+    console.log(`🔍 e2eeController exists:`, !!e2eeController);
+    console.log(
+      `🔍 e2eeController.sendEncryptedMessage exists:`,
+      e2eeController ? !!e2eeController.sendEncryptedMessage : false
+    );
+
+    if (!validateCallback(callback)) {
+      console.log(`❌ validateCallback failed`);
+      return;
+    }
+    console.log(`✅ validateCallback passed`);
+
+    // Sửa: Hỗ trợ cả conversation_id và roomId
+    if (!data.roomId && data.conversation_id) {
+      data.roomId = data.conversation_id;
+      console.log(`🔄 Converted conversation_id to roomId: ${data.roomId}`);
+    }
+
+    console.log(`🔍 Before validateFields:`, {
+      roomId: data.roomId,
+      ciphertext: !!data.ciphertext,
+      iv: !!data.iv,
+      from: data.from,
+      to: data.to,
+    });
+
+    if (!validateFields(data, ["roomId", "ciphertext", "iv"], callback)) {
+      console.log(`❌ validateFields failed`);
+      return;
+    }
+    console.log(`✅ validateFields passed`);
 
     const messageData = {
       roomId: data.roomId,
@@ -582,9 +855,105 @@ function registerE2EEHandlers(socket, io) {
       keyId: data.keyId,
       algorithm: data.algorithm || "AES-GCM-256",
       replyTo: data.replyTo,
+      // THÊM các trường QUAN TRỌNG
+      from: data.from, // <-- QUAN TRỌNG
+      to: data.to, // <-- QUAN TRỌNG
+      type: data.type || "text",
+      timestamp: data.timestamp || new Date().toISOString(),
+      peerFingerprint: data.peerFingerprint,
+      isEncrypted: data.isEncrypted || true,
+      conversation_id: data.conversation_id || data.roomId, // Thêm để controller biết
     };
 
-    await callController("sendEncryptedMessage", messageData, callback);
+    console.log(`🔍 Message data prepared:`, {
+      roomId: messageData.roomId,
+      from: messageData.from,
+      to: messageData.to,
+      ciphertextLength: messageData.ciphertext?.length,
+      ivLength: messageData.iv?.length,
+      hasFrom: !!messageData.from,
+      hasTo: !!messageData.to,
+    });
+
+    console.log(`🚀 Calling callController...`);
+    console.log(`📞 Function: sendEncryptedMessage`);
+
+    // KIỂM TRA LẠI TRƯỚC KHI GỌI
+    if (!callController) {
+      console.error(`❌ callController is not defined!`);
+      callback({
+        success: false,
+        error: "callController function not defined",
+      });
+      return;
+    }
+
+    if (!e2eeController) {
+      console.error(`❌ e2eeController is null!`);
+      callback({
+        success: false,
+        error: "E2EE controller not loaded",
+      });
+      return;
+    }
+
+    if (!e2eeController.sendEncryptedMessage) {
+      console.error(`❌ sendEncryptedMessage function not found!`);
+      console.error(
+        `Available functions:`,
+        Object.keys(e2eeController).filter(
+          (k) => typeof e2eeController[k] === "function"
+        )
+      );
+
+      callback({
+        success: false,
+        error: "sendEncryptedMessage function not available",
+      });
+      return;
+    }
+
+    try {
+      console.log(`🎯 Executing callController...`);
+      await callController("sendEncryptedMessage", messageData, callback);
+      console.log(`✅ callController completed`);
+    } catch (err) {
+      console.error(`❌ Error in handler:`, err.message);
+      console.error(err.stack);
+
+      if (callback) {
+        callback({
+          success: false,
+          error: "Handler error: " + err.message,
+        });
+      }
+    }
+  });
+
+  socket.on("get_encrypted_messages", async (data, callback) => {
+    console.log(
+      `📨 [e2eeHandlers - ${username}] get_encrypted_messages received:`,
+      data
+    );
+
+    if (!validateCallback(callback)) return;
+
+    // Sửa: Hỗ trợ cả conversation_id và roomId
+    if (!data.roomId && data.conversation_id) {
+      data.roomId = data.conversation_id;
+    }
+
+    if (!validateFields(data, ["roomId"], callback)) return;
+
+    await callController(
+      "getEncryptedMessages",
+      {
+        roomId: data.roomId,
+        page: data.page || 1,
+        limit: data.limit || 50,
+      },
+      callback
+    );
   });
 
   // 13. check_e2ee_status - Kiểm tra E2EE status của user khác
@@ -601,25 +970,6 @@ function registerE2EEHandlers(socket, io) {
   });
 
   // 14. get_encrypted_messages - Lấy encrypted messages của room
-  socket.on("get_encrypted_messages", async (data, callback) => {
-    console.log(
-      `📨 [e2eeHandlers - ${username}] get_encrypted_messages received:`,
-      data
-    );
-
-    if (!validateCallback(callback)) return;
-    if (!validateFields(data, ["roomId"], callback)) return;
-
-    await callController(
-      "getEncryptedMessages", // SỬA: Dùng hàm đúng tên từ controller
-      {
-        roomId: data.roomId,
-        page: data.page || 1,
-        limit: data.limit || 50,
-      },
-      callback
-    );
-  });
 
   // 15. test_direct_message - Test gửi message thường
   socket.on("test_direct_message", async (data, callback) => {

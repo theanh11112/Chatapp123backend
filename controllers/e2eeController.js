@@ -4,6 +4,7 @@ const User = require("../models/user");
 const Message = require("../models/message");
 const Room = require("../models/room");
 const catchAsync = require("../utils/catchAsync");
+const OneToOneMessage = require("../models/OneToOneMessage");
 
 /*
 |--------------------------------------------------------------------------
@@ -12,15 +13,37 @@ const catchAsync = require("../utils/catchAsync");
 */
 
 // Helper: Tính fingerprint của key
+// Helper: Tính fingerprint của key
 const calculateKeyFingerprint = (publicKey) => {
+  console.log("🔍 [calculateKeyFingerprint] Input type:", typeof publicKey);
+
+  let keyString;
+
+  if (typeof publicKey === "string") {
+    keyString = publicKey;
+  } else if (typeof publicKey === "object") {
+    // Nếu là object (JWK), stringify nó
+    keyString = JSON.stringify(publicKey);
+  } else if (Buffer.isBuffer(publicKey)) {
+    keyString = publicKey.toString("base64");
+  } else {
+    throw new Error(
+      `Invalid public key type: ${typeof publicKey}. Expected string or object.`
+    );
+  }
+
+  console.log(
+    "🔍 [calculateKeyFingerprint] Processing string length:",
+    keyString.length
+  );
+
   return crypto
     .createHash("sha256")
-    .update(publicKey)
+    .update(keyString)
     .digest("hex")
     .substring(0, 8)
     .toUpperCase();
 };
-
 // Helper: Tạo exchange ID duy nhất
 const generateExchangeId = (user1Id, user2Id) => {
   const ids = [user1Id, user2Id].sort();
@@ -51,41 +74,112 @@ const checkE2EEAccess = async (userId, targetUserId) => {
 
 // Thêm hàm này để kiểm tra quyền truy cập room
 // controllers/e2eeController.js - SỬA LẠI HOÀN TOÀN
+const mongoose = require("mongoose");
+
 const checkRoomAccess = async (keycloakId, roomId) => {
   try {
     console.log(
-      `🔍 [checkRoomAccess] Checking access for keycloakId: ${keycloakId} to room: ${roomId}`
+      `🔍 [checkRoomAccess] Checking access for keycloakId: ${keycloakId} to room/conversation: ${roomId}`
     );
 
-    // KHÔNG CẦN TÌM USER - trực tiếp tìm room với keycloakId
-    const room = await Room.findOne({
-      _id: roomId,
-      members: keycloakId, // So sánh trực tiếp với keycloakId
-    });
-
-    if (room) {
-      console.log(
-        `✅ [checkRoomAccess] Access GRANTED for ${keycloakId} to room ${roomId}`
-      );
-      console.log(
-        `   Room name: ${room.name}, Members count: ${room.members.length}`
-      );
-      return true;
-    } else {
-      console.log(
-        `❌ [checkRoomAccess] Access DENIED for ${keycloakId} to room ${roomId}`
-      );
-
-      // Debug: Kiểm tra room có tồn tại không
-      const roomExists = await Room.findById(roomId);
-      if (roomExists) {
-        console.log(`ℹ️  Room exists but ${keycloakId} not in members`);
-        console.log(`   Room members: ${JSON.stringify(roomExists.members)}`);
-      } else {
-        console.log(`ℹ️  Room does not exist: ${roomId}`);
-      }
+    // Chuyển đổi roomId string thành ObjectId nếu hợp lệ
+    let roomIdObj;
+    try {
+      roomIdObj = mongoose.Types.ObjectId.isValid(roomId)
+        ? new mongoose.Types.ObjectId(roomId)
+        : null;
+    } catch (error) {
+      console.log(`⚠️  Invalid roomId format: ${roomId}`);
       return false;
     }
+
+    // 1. Trước hết, kiểm tra trong Room model (group chat) - CHỈ khi roomId là ObjectId hợp lệ
+    if (roomIdObj) {
+      const room = await Room.findOne({
+        _id: roomIdObj, // Dùng ObjectId thay vì string
+        members: keycloakId,
+      });
+
+      if (room) {
+        console.log(
+          `✅ [checkRoomAccess] Access GRANTED - Group room found for ${keycloakId} to room ${roomId}`
+        );
+        console.log(
+          `   Room name: ${room.name}, Type: group, Members count: ${room.members.length}`
+        );
+        return true;
+      }
+    }
+
+    // 2. Kiểm tra trong OneToOneMessage (direct chat) - CHỈ khi roomId là ObjectId hợp lệ
+    if (roomIdObj) {
+      const oneToOneConversation = await OneToOneMessage.findOne({
+        _id: roomIdObj, // Dùng ObjectId thay vì string
+        participants: keycloakId,
+      });
+
+      if (oneToOneConversation) {
+        console.log(
+          `✅ [checkRoomAccess] Access GRANTED - One-to-one conversation found for ${keycloakId} to conversation ${roomId}`
+        );
+        console.log(
+          `   Conversation type: direct, Participants: ${JSON.stringify(
+            oneToOneConversation.participants
+          )}`
+        );
+        return true;
+      }
+    }
+
+    // 3. Nếu roomId không phải là ObjectId hợp lệ, có thể nó là một identifier khác
+    // Ví dụ: custom conversation ID hoặc participants hash
+    if (!roomIdObj) {
+      console.log(`ℹ️  ${roomId} không phải là MongoDB ObjectId hợp lệ`);
+
+      // THÊM: Kiểm tra nếu roomId là string representation của participants
+      // Ví dụ: "user1_user2" hoặc participants array dạng string
+      // Bạn có thể cần logic tùy chỉnh ở đây
+      const participants = roomId.split("_").filter((p) => p.length > 0);
+      if (participants.length >= 2 && participants.includes(keycloakId)) {
+        console.log(
+          `✅ [checkRoomAccess] Access GRANTED via participants hash for ${keycloakId}`
+        );
+        return true;
+      }
+    }
+
+    // 4. Debug: Kiểm tra xem room/conversation có tồn tại không
+    console.log(
+      `❌ [checkRoomAccess] Access DENIED for ${keycloakId} to room/conversation ${roomId}`
+    );
+
+    // Debug: Kiểm tra Room có tồn tại không
+    if (roomIdObj) {
+      const roomExists = await Room.findById(roomIdObj);
+      if (roomExists) {
+        console.log(`ℹ️  Group room exists but ${keycloakId} not in members`);
+        console.log(`   Room members: ${JSON.stringify(roomExists.members)}`);
+      } else {
+        console.log(`ℹ️  No group room found with ID: ${roomId}`);
+      }
+
+      // Debug: Kiểm tra OneToOneMessage có tồn tại không
+      const conversationExists = await OneToOneMessage.findById(roomIdObj);
+      if (conversationExists) {
+        console.log(
+          `ℹ️  One-to-one conversation exists but ${keycloakId} not in participants`
+        );
+        console.log(
+          `   Conversation participants: ${JSON.stringify(
+            conversationExists.participants
+          )}`
+        );
+      } else {
+        console.log(`ℹ️  No one-to-one conversation found with ID: ${roomId}`);
+      }
+    }
+
+    return false;
   } catch (error) {
     console.error("❌ [checkRoomAccess] Error:", error.message);
     return false;
@@ -96,18 +190,35 @@ const checkRoomAccess = async (keycloakId, roomId) => {
 
 // 1. Cập nhật E2EE public key cho user
 // POST /users/e2ee/update-key
+// 1. Cập nhật E2EE public key cho user - VERSION FIXED
+// POST /users/e2ee/update-key
+// controllers/e2eeController.js - SỬA LẠI updateE2EEPublicKey
 const updateE2EEPublicKey = catchAsync(async (req, res) => {
   try {
-    const { publicKey, keyType = "ecdh" } = req.body;
+    const {
+      publicKey,
+      keyType = "ecdh",
+      debug = false,
+      forceUpdate = false,
+    } = req.body;
     const currentUserId = req.user?.keycloakId;
 
     console.log("🔑 Updating E2EE public key for user:", currentUserId);
 
-    // VALIDATION
+    // VALIDATION STRICT
     if (!publicKey) {
       return res.status(400).json({
         status: "error",
         message: "publicKey is required",
+      });
+    }
+
+    // VALIDATE KEY FORMAT
+    const validation = validatePublicKey(publicKey);
+    if (!validation.valid) {
+      return res.status(400).json({
+        status: "error",
+        message: validation.error,
       });
     }
 
@@ -122,42 +233,87 @@ const updateE2EEPublicKey = catchAsync(async (req, res) => {
 
     // Tính fingerprint
     const fingerprint = calculateKeyFingerprint(publicKey);
+    console.log("✅ Calculated fingerprint:", fingerprint);
 
-    // Kiểm tra nếu key đã tồn tại
+    // KIỂM TRA NẾU KEY ĐÃ TỒN TẠI
     const existingKey = user.e2eeKeys?.find(
       (key) => key.fingerprint === fingerprint
     );
 
     if (existingKey) {
-      if (existingKey.isRevoked) {
-        // Reactivate revoked key
-        existingKey.isRevoked = false;
-        existingKey.revokedAt = null;
-        existingKey.revokedReason = null;
-      } else {
-        return res.status(400).json({
-          status: "error",
-          message: "Public key already exists",
-          data: { fingerprint },
+      console.log("ℹ️ Key already exists:", {
+        fingerprint,
+        isActive: existingKey.isActive,
+        createdAt: existingKey.createdAt,
+      });
+
+      // Nếu key đã tồn tại và active, chỉ cần trả về success
+      if (existingKey.isActive && !forceUpdate) {
+        return res.status(200).json({
+          status: "success",
+          message: "Public key already exists and is active",
+          data: {
+            fingerprint,
+            keyType: existingKey.keyType,
+            createdAt: existingKey.createdAt,
+            e2eeEnabled: user.e2eeEnabled || true,
+            alreadyExists: true,
+            isActive: true,
+          },
+        });
+      }
+
+      // Nếu forceUpdate hoặc key không active, reactivate nó
+      if (!existingKey.isActive || forceUpdate) {
+        console.log("🔄 Reactivating existing key...");
+
+        // Đánh dấu tất cả keys cũ là không active
+        user.e2eeKeys.forEach((key) => {
+          key.isActive = false;
+        });
+
+        // Kích hoạt lại key hiện tại
+        existingKey.isActive = true;
+        existingKey.keyType = keyType;
+        existingKey.updatedAt = new Date();
+
+        user.currentKeyId = fingerprint;
+        user.e2eeEnabled = true;
+
+        await user.save();
+
+        return res.status(200).json({
+          status: "success",
+          message: "Existing key reactivated successfully",
+          data: {
+            fingerprint,
+            keyType,
+            e2eeEnabled: user.e2eeEnabled,
+            alreadyExists: true,
+            reactivated: true,
+          },
         });
       }
     }
 
-    // Đánh dấu tất cả keys cũ là không active
-    if (user.e2eeKeys && user.e2eeKeys.length > 0) {
-      user.e2eeKeys.forEach((key) => {
-        key.isActive = false;
-      });
-    }
+    // DỌN DẸP KEYS CŨ (giữ tối đa 5 keys gần nhất)
+    await cleanupOldKeys(user);
 
-    // Thêm key mới
+    // THÊM KEY MỚI
     const newKey = {
       publicKey: publicKey,
       keyType: keyType,
       fingerprint: fingerprint,
       createdAt: new Date(),
+      updatedAt: new Date(),
       isActive: true,
+      isRevoked: false,
     };
+
+    // Đánh dấu tất cả keys cũ là không active
+    user.e2eeKeys.forEach((key) => {
+      key.isActive = false;
+    });
 
     // Thêm vào mảng keys
     user.e2eeKeys = user.e2eeKeys || [];
@@ -166,33 +322,29 @@ const updateE2EEPublicKey = catchAsync(async (req, res) => {
     // Cập nhật current key
     user.currentKeyId = fingerprint;
     user.e2eeEnabled = true;
+    user.updatedAt = new Date();
 
     await user.save();
 
-    console.log("✅ E2EE public key updated for user:", currentUserId);
+    console.log("✅ New E2EE key added:", {
+      userId: currentUserId,
+      fingerprint,
+      totalKeys: user.e2eeKeys.length,
+    });
 
-    // Notify friends about new key
-    if (user.friends && user.friends.length > 0 && req.app.get("io")) {
-      const io = req.app.get("io");
-      user.friends.forEach((friendKeycloakId) => {
-        io.to(friendKeycloakId).emit("friend_e2ee_key_updated", {
-          userId: currentUserId,
-          username: user.username,
-          fingerprint: fingerprint,
-          keyType: keyType,
-          timestamp: new Date(),
-        });
-      });
-    }
+    // Notify friends
+    notifyFriendsAboutKeyUpdate(user, fingerprint, keyType, req);
 
     res.status(200).json({
       status: "success",
       message: "E2EE public key updated successfully",
       data: {
-        fingerprint: newKey.fingerprint,
-        keyType: newKey.keyType,
+        fingerprint,
+        keyType,
         createdAt: newKey.createdAt,
         e2eeEnabled: user.e2eeEnabled,
+        alreadyExists: false,
+        totalKeys: user.e2eeKeys.length,
       },
     });
   } catch (error) {
@@ -200,9 +352,151 @@ const updateE2EEPublicKey = catchAsync(async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Failed to update E2EE public key",
+      error: error.message,
     });
   }
 });
+
+// Hàm cleanup old keys
+const cleanupOldKeys = async (user) => {
+  try {
+    if (!user.e2eeKeys || user.e2eeKeys.length <= 5) {
+      return;
+    }
+
+    // Sắp xếp keys theo thời gian tạo (mới nhất trước)
+    const sortedKeys = [...user.e2eeKeys].sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+
+    // Giữ lại 5 keys gần nhất
+    const keysToKeep = sortedKeys.slice(0, 5);
+
+    // Tìm IDs của keys cần giữ
+    const fingerprintsToKeep = keysToKeep.map((k) => k.fingerprint);
+
+    // Lọc bỏ keys cũ
+    user.e2eeKeys = user.e2eeKeys.filter((key) =>
+      fingerprintsToKeep.includes(key.fingerprint)
+    );
+
+    console.log(
+      `🧹 Cleaned up old keys, keeping ${user.e2eeKeys.length} most recent keys`
+    );
+  } catch (error) {
+    console.error("❌ Error cleaning up old keys:", error);
+  }
+};
+
+// Hàm validate public key CHẶT CHẼ HƠN
+const validatePublicKey = (publicKey) => {
+  if (!publicKey) {
+    return { valid: false, error: "Public key is required" };
+  }
+
+  if (typeof publicKey !== "string") {
+    return { valid: false, error: "Public key must be a string" };
+  }
+
+  // Kiểm tra độ dài tối thiểu
+  if (publicKey.length < 50) {
+    return {
+      valid: false,
+      error: `Public key too short (${publicKey.length} chars). Minimum 50 characters required.`,
+    };
+  }
+
+  // Kiểm tra key rỗng
+  if (publicKey.trim() === "{}") {
+    return { valid: false, error: "Public key cannot be empty object {}" };
+  }
+
+  // Kiểm tra nếu là JSON hợp lệ
+  const trimmedKey = publicKey.trim();
+  if (trimmedKey.startsWith("{") && trimmedKey.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(trimmedKey);
+
+      // Kiểm tra JWK format
+      if (!parsed.kty || !parsed.crv) {
+        return {
+          valid: false,
+          error: "Invalid JWK format: missing kty or crv",
+        };
+      }
+
+      if (parsed.kty !== "EC" || parsed.crv !== "P-256") {
+        return {
+          valid: false,
+          error: `Unsupported key type: ${parsed.kty}/${parsed.crv}. Only EC/P-256 supported.`,
+        };
+      }
+
+      // Kiểm tra x và y coordinates
+      if (!parsed.x || !parsed.y) {
+        return {
+          valid: false,
+          error: "Invalid JWK: missing x or y coordinates",
+        };
+      }
+
+      // Kiểm tra độ dài coordinates
+      if (parsed.x.length < 10 || parsed.y.length < 10) {
+        return { valid: false, error: "Invalid coordinates length" };
+      }
+
+      return { valid: true, format: "jwk" };
+    } catch (e) {
+      return { valid: false, error: "Invalid JSON format: " + e.message };
+    }
+  }
+
+  // Kiểm tra base64 format
+  if (publicKey.match(/^[A-Za-z0-9+/=]+$/)) {
+    // Đây có thể là base64
+    try {
+      // Decode base64 để kiểm tra
+      const decoded = Buffer.from(publicKey, "base64");
+      if (decoded.length < 32) {
+        // Độ dài tối thiểu cho EC key
+        return { valid: false, error: "Base64 key too short" };
+      }
+      return { valid: true, format: "base64" };
+    } catch (e) {
+      return { valid: false, error: "Invalid base64 format" };
+    }
+  }
+
+  return {
+    valid: false,
+    error: "Unsupported key format. Must be valid JWK JSON or base64 string.",
+  };
+};
+
+// Hàm notify friends
+const notifyFriendsAboutKeyUpdate = (user, fingerprint, keyType, req) => {
+  try {
+    if (user.friends && user.friends.length > 0 && req.app.get("io")) {
+      const io = req.app.get("io");
+      user.friends.forEach((friendKeycloakId) => {
+        io.to(friendKeycloakId).emit("friend_e2ee_key_updated", {
+          userId: user.keycloakId,
+          username: user.username,
+          fingerprint: fingerprint,
+          keyType: keyType,
+          timestamp: new Date(),
+        });
+      });
+      console.log(
+        "📢 Notified",
+        user.friends.length,
+        "friends about key update"
+      );
+    }
+  } catch (error) {
+    console.error("❌ Error notifying friends:", error);
+  }
+};
 
 // 2. Lấy E2EE public key của một user
 // POST /users/e2ee/public-key
@@ -797,149 +1091,346 @@ const checkE2EEStatus = catchAsync(async (req, res) => {
   }
 });
 
-// 11. Gửi encrypted message - ĐÃ SỬA VỚI CHECK ROOM ACCESS
+// 11. Gửi encrypted message - ĐÃ SỬA ĐỂ HỖ TRỢ CẢ CONVERSATION VÀ ROOM
+// controllers/e2eeController.js - SỬA HÀM sendEncryptedMessage
 const sendEncryptedMessage = catchAsync(async (req, res) => {
+  console.log("🎯 [CONTROLLER] sendEncryptedMessage STARTED");
+  console.log("📦 Request body:", JSON.stringify(req.body, null, 2));
+  console.log("👤 User:", req.user?.keycloakId);
+
   try {
     const {
       roomId,
+      conversation_id,
       ciphertext,
       iv,
       keyId,
       algorithm = "AES-GCM-256",
       replyTo,
+      from,
+      to,
     } = req.body;
 
     const currentUserId = req.user?.keycloakId;
 
-    console.log("🔐 Sending encrypted message to room:", roomId);
+    console.log("🔐 Processing encrypted message:", {
+      roomId,
+      conversation_id,
+      from,
+      to,
+      currentUserId,
+    });
 
-    // VALIDATION
-    if (!roomId || !ciphertext || !iv) {
+    // XÁC ĐỊNH TARGET ID - ƯU TIÊN conversation_id
+    const targetId = conversation_id || roomId;
+
+    if (!targetId) {
+      console.error("❌ No target ID found!");
       return res.status(400).json({
         status: "error",
-        message: "roomId, ciphertext, and iv are required",
+        message: "roomId or conversation_id is required",
       });
     }
+
+    console.log(`🎯 Target ID: ${targetId}`);
 
     // TÌM USER
     const user = await User.findOne({ keycloakId: currentUserId });
     if (!user) {
+      console.error(`❌ User not found: ${currentUserId}`);
       return res.status(404).json({
         status: "error",
         message: "User not found",
       });
     }
 
-    // Kiểm tra user có E2EE enabled không
+    // Kiểm tra E2EE
     if (!user.e2eeEnabled) {
+      console.error(`❌ User doesn't have E2EE enabled`);
       return res.status(400).json({
         status: "error",
         message: "You must enable E2EE first",
       });
     }
 
-    // Kiểm tra user có active key không
+    // Kiểm tra active key
     const activeKey = user.e2eeKeys?.find(
       (key) => key.fingerprint === user.currentKeyId && key.isActive
     );
 
     if (!activeKey) {
+      console.error(`❌ No active key for user`);
       return res.status(400).json({
         status: "error",
         message: "No active E2EE key found",
       });
     }
 
-    // KIỂM TRA QUYỀN TRUY CẬP ROOM
-    const hasRoomAccess = await checkRoomAccess(currentUserId, roomId);
-    if (!hasRoomAccess) {
-      return res.status(403).json({
-        status: "error",
-        message: "Access denied to this room",
-      });
-    }
+    console.log(
+      `✅ User validated: ${currentUserId}, active key: ${activeKey.fingerprint}`
+    );
 
-    // Tìm room để lấy thông tin
-    const room = await Room.findById(roomId);
-    if (!room) {
-      return res.status(404).json({
-        status: "error",
-        message: "Room not found",
-      });
-    }
+    // ==================== XÁC ĐỊNH LOẠI CONVERSATION ====================
+    console.log("🔍 Determining conversation type...");
 
-    // TẠO ENCRYPTED MESSAGE
-    const messageData = {
-      room: roomId,
-      sender: {
-        id: user.keycloakId,
-        name: user.username || "Unknown",
-        avatar: user.avatar,
-      },
-      type: "encrypted",
-      content: ciphertext,
-      isEncrypted: true,
-      encryptionData: {
-        ciphertext: ciphertext,
-        iv: iv,
-        keyId: keyId || activeKey.fingerprint,
-        algorithm: algorithm,
-      },
-      replyTo: replyTo || null,
-    };
+    // THỬ TÌM TRONG OneToOneMessage TRƯỚC (direct chat)
+    let conversation = await OneToOneMessage.findById(targetId);
+    let isOneToOneChat = false;
+    let recipientId = null;
 
-    const message = await Message.create(messageData);
+    if (conversation) {
+      console.log("✅ Found direct conversation in OneToOneMessage");
+      isOneToOneChat = true;
 
-    // CẬP NHẬT ROOM LAST MESSAGE
-    await Room.findByIdAndUpdate(roomId, {
-      lastMessage: message._id,
-      updatedAt: new Date(),
-    });
+      // Kiểm tra quyền truy cập
+      if (!conversation.participants.includes(currentUserId)) {
+        return res.status(403).json({
+          status: "error",
+          message: "Access denied to this conversation",
+        });
+      }
 
-    console.log("✅ Encrypted message created:", message._id);
+      // Xác định recipient
+      recipientId = conversation.participants.find(
+        (id) => id !== currentUserId
+      );
+      if (!recipientId && to) {
+        recipientId = to;
+      }
 
-    // REAL-TIME SOCKET EMIT
-    const io = req.app.get("io");
-    if (io) {
-      const eventName = room.isGroup
-        ? "encrypted_group_message"
-        : "encrypted_message";
+      console.log(`📱 Processing 1-1 chat with recipient: ${recipientId}`);
+    } else {
+      // THỬ TÌM TRONG Room (group chat)
+      console.log("🔍 Checking Room model...");
+      const room = await Room.findById(targetId);
 
-      const messageForSocket = {
-        ...message.toObject(),
-        incoming: false,
-        outgoing: true,
-      };
+      if (room) {
+        console.log("✅ Found group room");
+        isOneToOneChat = false;
 
-      // Gửi cho tất cả members trong room (trừ người gửi)
-      const members = room.members || [];
-      const otherMembers = members.filter((member) => member !== currentUserId);
-
-      otherMembers.forEach(async (memberKeycloakId) => {
-        const member = await User.findOne({ keycloakId: memberKeycloakId });
-        if (member?.socketId) {
-          io.to(member.socketId).emit(eventName, {
-            ...messageForSocket,
-            incoming: true,
-            outgoing: false,
+        // Kiểm tra quyền truy cập
+        if (!room.members.includes(currentUserId)) {
+          return res.status(403).json({
+            status: "error",
+            message: "Access denied to this room",
           });
         }
-      });
+      } else {
+        // Nếu không tìm thấy trong cả hai, kiểm tra xem có phải là conversation mới không
+        console.log("🔍 Not found in database, checking if new 1-1 chat...");
 
-      // Gửi lại cho sender để confirm
-      if (user.socketId) {
-        io.to(user.socketId).emit(eventName, messageForSocket);
+        if (to) {
+          // Có recipient -> tạo conversation mới
+          isOneToOneChat = true;
+          recipientId = to;
+
+          console.log(
+            `🆕 Creating new 1-1 conversation between ${currentUserId} and ${recipientId}`
+          );
+
+          // Tạo conversation mới
+          conversation = new OneToOneMessage({
+            participants: [currentUserId, recipientId],
+            messages: [],
+            e2eeEnabled: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+
+          await conversation.save();
+          console.log(`✅ New conversation created: ${conversation._id}`);
+        } else {
+          console.error(
+            "❌ Conversation/Room not found and no recipient specified"
+          );
+          return res.status(404).json({
+            status: "error",
+            message: "Conversation/Room not found",
+          });
+        }
       }
     }
 
-    res.status(200).json({
-      status: "success",
-      message: "Encrypted message sent successfully",
-      data: message,
-    });
+    // ==================== XỬ LÝ THEO LOẠI CHAT ====================
+    if (isOneToOneChat) {
+      // Đảm bảo có conversation
+      if (!conversation) {
+        console.error("❌ Conversation is null for 1-1 chat");
+        return res.status(500).json({
+          status: "error",
+          message: "Internal server error: Conversation not initialized",
+        });
+      }
+
+      // TẠO MESSAGE
+      const newMessage = {
+        _id: require("uuid").v4(),
+        from: currentUserId,
+        to: recipientId,
+        type: "encrypted",
+        content: ciphertext,
+        isEncrypted: true,
+        encryptionData: {
+          ciphertext: ciphertext,
+          iv: iv,
+          keyId: keyId || activeKey.fingerprint,
+          algorithm: algorithm,
+          timestamp: new Date(),
+        },
+        createdAt: new Date(),
+        delivered: false,
+        seen: false,
+        ...(replyTo && {
+          replyTo: replyTo.id,
+          replyContent: replyTo.content,
+          replySender: replyTo.sender,
+        }),
+      };
+
+      console.log(`📝 Creating 1-1 message: ${newMessage._id}`);
+
+      // LƯU VÀO CONVERSATION
+      conversation.messages.push(newMessage);
+      conversation.updatedAt = new Date();
+      conversation.e2eeEnabled = true;
+
+      await conversation.save();
+
+      console.log(`✅ 1-1 message saved to conversation: ${conversation._id}`);
+
+      // BROADCAST SOCKET
+      const io = req.app.get("io");
+      if (io) {
+        // Gửi cho recipient
+        const recipient = await User.findOne({ keycloakId: recipientId });
+        if (recipient?.socketId) {
+          io.to(recipient.socketId).emit("receive_encrypted_message", {
+            messageId: newMessage._id,
+            conversationId: conversation._id,
+            roomId: conversation._id, // Tương thích
+            senderId: currentUserId,
+            ciphertext: ciphertext,
+            iv: iv,
+            keyId: keyId,
+            algorithm: algorithm,
+            timestamp: newMessage.createdAt,
+            isEncrypted: true,
+            type: "text",
+          });
+          console.log(`📤 Sent to recipient socket: ${recipient.socketId}`);
+        }
+
+        // Gửi lại cho sender
+        if (user.socketId) {
+          io.to(user.socketId).emit("encrypted_message_sent", {
+            success: true,
+            messageId: newMessage._id,
+            conversationId: conversation._id,
+            timestamp: newMessage.createdAt,
+          });
+        }
+      }
+
+      return res.status(200).json({
+        status: "success",
+        message: "Encrypted message sent successfully",
+        data: {
+          messageId: newMessage._id,
+          conversationId: conversation._id,
+          senderId: currentUserId,
+          recipientId: recipientId,
+          timestamp: newMessage.createdAt,
+          chatType: "individual",
+        },
+      });
+    } else {
+      // GROUP CHAT
+      console.log("👥 Processing group chat...");
+
+      const room = await Room.findById(targetId);
+      if (!room) {
+        console.error(`❌ Room not found: ${targetId}`);
+        return res.status(404).json({
+          status: "error",
+          message: "Room not found",
+        });
+      }
+
+      // TẠO GROUP MESSAGE
+      const messageData = {
+        room: targetId,
+        sender: {
+          id: user.keycloakId,
+          name: user.username || "Unknown",
+          avatar: user.avatar,
+        },
+        type: "encrypted",
+        content: ciphertext,
+        isEncrypted: true,
+        encryptionData: {
+          ciphertext: ciphertext,
+          iv: iv,
+          keyId: keyId || activeKey.fingerprint,
+          algorithm: algorithm,
+          timestamp: new Date(),
+        },
+        replyTo: replyTo || null,
+        createdAt: new Date(),
+      };
+
+      const message = await Message.create(messageData);
+      console.log(`✅ Group message created: ${message._id}`);
+
+      // CẬP NHẬT ROOM
+      room.lastMessage = message._id;
+      room.updatedAt = new Date();
+      await room.save();
+
+      // BROADCAST SOCKET
+      const io = req.app.get("io");
+      if (io) {
+        const otherMembers = room.members.filter(
+          (member) => member !== currentUserId
+        );
+
+        otherMembers.forEach(async (memberId) => {
+          const member = await User.findOne({ keycloakId: memberId });
+          if (member?.socketId) {
+            io.to(member.socketId).emit("encrypted_group_message", {
+              ...message.toObject(),
+              incoming: true,
+              outgoing: false,
+            });
+          }
+        });
+
+        // Gửi lại cho sender
+        if (user.socketId) {
+          io.to(user.socketId).emit("encrypted_group_message", {
+            ...message.toObject(),
+            incoming: false,
+            outgoing: true,
+          });
+        }
+      }
+
+      return res.status(200).json({
+        status: "success",
+        message: "Group encrypted message sent successfully",
+        data: {
+          messageId: message._id,
+          roomId: targetId,
+          senderId: currentUserId,
+          timestamp: message.createdAt,
+          chatType: "group",
+        },
+      });
+    }
   } catch (error) {
-    console.error("❌ Error sending encrypted message:", error);
-    res.status(500).json({
+    console.error("❌ Error in sendEncryptedMessage:", error);
+    console.error(error.stack);
+
+    return res.status(500).json({
       status: "error",
       message: "Failed to send encrypted message",
       error: error.message,
@@ -948,52 +1439,175 @@ const sendEncryptedMessage = catchAsync(async (req, res) => {
 });
 
 // 12. Lấy encrypted messages của một room - ĐÃ SỬA VỚI CHECK ROOM ACCESS
+// 12. Lấy encrypted messages - ĐÃ SỬA ĐỂ HỖ TRỢ CẢ CONVERSATION VÀ ROOM
 const getEncryptedMessages = catchAsync(async (req, res) => {
   try {
-    const { roomId, page = 1, limit = 50 } = req.body;
+    const {
+      roomId, // Cho group chat
+      conversation_id, // Cho 1-1 chat
+      page = 1,
+      limit = 50,
+    } = req.body;
+
     const currentUserId = req.user?.keycloakId;
 
-    console.log("🔍 Fetching encrypted messages for room:", roomId);
+    console.log("🔍 Fetching encrypted messages:", {
+      roomId,
+      conversation_id,
+      currentUserId,
+      page,
+      limit,
+    });
 
     // VALIDATION
-    if (!roomId) {
+    if (!roomId && !conversation_id) {
       return res.status(400).json({
         status: "error",
-        message: "roomId is required",
+        message: "roomId or conversation_id is required",
       });
     }
 
-    // KIỂM TRA QUYỀN TRUY CẬP ROOM
-    const hasRoomAccess = await checkRoomAccess(currentUserId, roomId);
-    if (!hasRoomAccess) {
-      return res.status(403).json({
-        status: "error",
-        message: "Access denied to this room",
+    // XÁC ĐỊNH LOẠI CHAT
+    const chatType = roomId ? "group" : "individual";
+    const targetId = roomId || conversation_id;
+
+    console.log(`🎯 Fetching ${chatType} encrypted messages for ID:`, targetId);
+
+    let hasAccess = false;
+    let messages = [];
+    let totalEncrypted = 0;
+    let chatInfo = null;
+
+    if (chatType === "group") {
+      // GROUP CHAT
+
+      // KIỂM TRA QUYỀN TRUY CẬP ROOM
+      hasAccess = await checkRoomAccess(currentUserId, targetId);
+      if (!hasAccess) {
+        return res.status(403).json({
+          status: "error",
+          message: "Access denied to this room",
+        });
+      }
+
+      const skip = (page - 1) * limit;
+
+      // LẤY ENCRYPTED MESSAGES TỪ MESSAGE COLLECTION
+      messages = await Message.find({
+        room: targetId,
+        isEncrypted: true,
+        deletedAt: null,
+      })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean();
+
+      totalEncrypted = await Message.countDocuments({
+        room: targetId,
+        isEncrypted: true,
+        deletedAt: null,
       });
+
+      // Lấy thông tin room
+      const room = await Room.findById(targetId);
+      if (room) {
+        chatInfo = {
+          id: room._id,
+          name: room.name,
+          type: "group",
+          isGroup: room.isGroup,
+          members: room.members || [],
+          e2eeEnabled: room.e2eeEnabled || false,
+        };
+      }
+
+      console.log(`✅ Found ${messages.length} group encrypted messages`);
+    } else if (chatType === "individual") {
+      // 1-1 CHAT
+
+      // TÌM CONVERSATION
+      const conversation = await OneToOneMessage.findOne({
+        $or: [{ _id: targetId }, { participants: { $all: [currentUserId] } }],
+      });
+
+      if (!conversation) {
+        return res.status(404).json({
+          status: "error",
+          message: "Conversation not found",
+        });
+      }
+
+      // KIỂM TRA QUYỀN TRUY CẬP
+      hasAccess = conversation.participants.includes(currentUserId);
+      if (!hasAccess) {
+        return res.status(403).json({
+          status: "error",
+          message: "Access denied to this conversation",
+        });
+      }
+
+      const skip = (page - 1) * limit;
+
+      // LỌC VÀ LẤY ENCRYPTED MESSAGES TỪ CONVERSATION
+      const allEncryptedMessages = conversation.messages
+        .filter((msg) => msg.isEncrypted === true && !msg.deletedAt)
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      totalEncrypted = allEncryptedMessages.length;
+
+      // Phân trang
+      messages = allEncryptedMessages.slice(skip, skip + limit).map((msg) => ({
+        ...msg.toObject(),
+        // Thêm metadata để tương thích
+        conversationId: conversation._id,
+        room: conversation._id, // Tương thích với frontend
+        sender: {
+          id: msg.from,
+          name: msg.from === currentUserId ? "You" : "Unknown", // Cần lấy từ DB
+        },
+        incoming: msg.from !== currentUserId,
+        outgoing: msg.from === currentUserId,
+      }));
+
+      // Lấy thông tin conversation
+      chatInfo = {
+        id: conversation._id,
+        type: "individual",
+        participants: conversation.participants,
+        e2eeEnabled: conversation.e2eeEnabled,
+        lastKeyExchange: conversation.lastKeyExchange,
+        totalMessages: conversation.messages.length,
+        totalEncryptedMessages: totalEncrypted,
+      };
+
+      console.log(`✅ Found ${messages.length} 1-1 encrypted messages`);
     }
 
-    const skip = (page - 1) * limit;
-
-    // LẤY ENCRYPTED MESSAGES
-    const messages = await Message.find({
-      room: roomId,
-      isEncrypted: true,
-      deletedAt: null,
-    })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-
-    console.log(
-      `✅ Found ${messages.length} encrypted messages for room ${roomId}`
-    );
+    // LOG KẾT QUẢ
+    console.log("📊 Encrypted messages results:", {
+      chatType,
+      targetId,
+      messagesCount: messages.length,
+      totalEncrypted,
+      page,
+      limit,
+      hasAccess,
+    });
 
     res.status(200).json({
       status: "success",
       results: messages.length,
-      pagination: { page, limit, total: messages.length },
+      pagination: {
+        page,
+        limit,
+        total: totalEncrypted,
+        totalPages: Math.ceil(totalEncrypted / limit),
+      },
       data: messages,
+      chatInfo: chatInfo,
+      chatType: chatType,
+      targetId: targetId,
     });
   } catch (error) {
     console.error("❌ Error fetching encrypted messages:", error);

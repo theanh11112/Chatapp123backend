@@ -185,6 +185,50 @@ module.exports = (socket, io) => {
     }
   };
 
+  // Thêm vào phần helper functions
+  const forwardAnswerToCaller = async (callId, answerData) => {
+    try {
+      const call = await Call.findById(callId);
+      if (!call) {
+        console.error(`❌ Call ${callId} not found for answer forwarding`);
+        return false;
+      }
+
+      const callerId = call.startedBy;
+      const calleeId = answerData.from;
+
+      console.log(
+        `📤 Forwarding answer from ${calleeId} to caller ${callerId}`
+      );
+
+      // Forward answer đến caller
+      io.to(callerId).emit("webrtc_answer", {
+        from: calleeId,
+        answer: answerData.answer,
+        roomID: call.roomID,
+        callId: call._id,
+        timestamp: new Date(),
+      });
+
+      console.log(`✅ Answer forwarded to caller ${callerId}`);
+
+      // Cập nhật call record với answer
+      const participant = call.participantDetails.find(
+        (p) => p.userId === calleeId
+      );
+      if (participant) {
+        if (!participant.webrtc) participant.webrtc = {};
+        participant.webrtc.answer = answerData.answer;
+        await call.save();
+      }
+
+      return true;
+    } catch (error) {
+      console.error("❌ Error forwarding answer:", error);
+      return false;
+    }
+  };
+
   // ==================== SOCKET.IO AUDIO CALL ====================
 
   // 🎯 SỬA: Chỉ giữ 1 hàm start_audio_call
