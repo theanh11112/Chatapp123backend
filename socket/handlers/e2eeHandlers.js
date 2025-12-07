@@ -10,6 +10,7 @@ try {
   console.log("✅ [e2eeHandlers] e2eeController imported successfully");
 
   // Verify essential functions exist
+  // Cập nhật phần IMPORT CONTROLLER
   const requiredFunctions = [
     "toggleE2EE",
     "getE2EEInfo",
@@ -23,7 +24,11 @@ try {
     "confirmE2EEKeyExchange",
     "checkE2EEStatus",
     "sendEncryptedMessage",
-    "getEncryptedMessages", // THÊM VÀO
+    "getEncryptedMessages",
+    // 🆕 THÊM 3 hàm mới
+    "getMyCurrentKey",
+    "checkAndSyncKey",
+    "syncKeyFromClient",
   ];
 
   const missingFunctions = requiredFunctions.filter(
@@ -74,6 +79,7 @@ function registerE2EEHandlers(socket, io) {
 
   // ==================== CLEANUP EXISTING HANDLERS ====================
   // Remove any existing handlers to avoid conflicts
+  // Thêm vào mảng eventsToRemove
   const eventsToRemove = [
     "ping",
     "get_e2ee_info",
@@ -88,10 +94,17 @@ function registerE2EEHandlers(socket, io) {
     "confirm_key_exchange",
     "send_encrypted_message",
     "check_e2ee_status",
-    "get_encrypted_messages", // THÊM VÀO
-    "test_direct_message", // THÊM VÀO
+    "get_encrypted_messages",
+    "test_direct_message",
+    "debug_room_access",
+    "quick_room_check",
+    "debug_create_room",
+    "health_check",
+    // 🆕 THÊM các event mới
+    "get_my_current_key",
+    "check_and_sync_key",
+    "sync_key_from_client",
   ];
-
   eventsToRemove.forEach((event) => {
     const listenerCount = socket.listeners(event).length;
     if (listenerCount > 0) {
@@ -1202,8 +1215,228 @@ function registerE2EEHandlers(socket, io) {
     }
   });
 
+  // ==================== THÊM HÀM MỚI VÀO registerE2EEHandlers ====================
+
+  // 18. get_my_current_key - Lấy key hiện tại của bản thân để so sánh với storage
+  socket.on("get_my_current_key", async (callback) => {
+    console.log(`🔑 [e2eeHandlers - ${username}] get_my_current_key received`);
+
+    if (!validateCallback(callback)) return;
+
+    await callController("getMyCurrentKey", {}, callback);
+  });
+
+  // 19. check_and_sync_key - Kiểm tra và đồng bộ key với frontend storage
+  socket.on("check_and_sync_key", async (data, callback) => {
+    console.log(
+      `🔄 [e2eeHandlers - ${username}] check_and_sync_key received:`,
+      {
+        hasClientKey: !!data?.publicKey,
+        clientFingerprint: data?.fingerprint,
+      }
+    );
+
+    if (!validateCallback(callback)) return;
+
+    // Kiểm tra dữ liệu từ client
+    const clientData = {
+      clientPublicKey: data?.publicKey,
+      clientFingerprint: data?.fingerprint,
+      clientCreatedAt: data?.createdAt,
+    };
+
+    await callController("checkAndSyncKey", clientData, callback);
+  });
+
+  // 20. sync_key_from_client - Đồng bộ key từ client lên server
+  socket.on("sync_key_from_client", async (data, callback) => {
+    console.log(
+      `📤 [e2eeHandlers - ${username}] sync_key_from_client received:`,
+      {
+        hasPublicKey: !!data?.publicKey,
+        fingerprint: data?.fingerprint,
+        keyType: data?.keyType,
+      }
+    );
+
+    if (!validateCallback(callback)) return;
+
+    // Kiểm tra required fields
+    if (!validateFields(data, ["publicKey"], callback)) return;
+
+    const syncData = {
+      publicKey: data.publicKey,
+      fingerprint: data.fingerprint,
+      keyType: data.keyType || "ecdh",
+      forceUpdate: data.forceUpdate || false,
+    };
+
+    await callController("syncKeyFromClient", syncData, callback);
+  });
+
+  // 21. auto_sync_on_login - Tự động đồng bộ khi đăng nhập (trigger từ client)
+  socket.on("auto_sync_on_login", async (data, callback) => {
+    console.log(`🚀 [e2eeHandlers - ${username}] auto_sync_on_login received`);
+
+    if (!validateCallback(callback)) return;
+
+    try {
+      // 1. Kiểm tra xem có key trên client không
+      const clientKeyData = data || {};
+
+      // 2. Kiểm tra sync status
+      const syncCheck = await new Promise((resolve) => {
+        const mockCallback = (response) => resolve(response);
+
+        // Tạo mock call
+        const mockData = {
+          publicKey: clientKeyData.publicKey,
+          fingerprint: clientKeyData.fingerprint,
+          createdAt: clientKeyData.createdAt,
+        };
+
+        // Gọi check_and_sync_key
+        socket.emit("check_and_sync_key", mockData, mockCallback);
+      });
+
+      console.log(`🔍 [${username}] Sync check result:`, {
+        syncRequired: syncCheck.data?.syncRequired,
+        syncAction: syncCheck.data?.syncAction,
+        match: syncCheck.data?.match,
+      });
+
+      // 3. Thực hiện sync nếu cần
+      if (syncCheck.success && syncCheck.data?.syncRequired) {
+        const syncAction = syncCheck.data.syncAction;
+
+        switch (syncAction) {
+          case "server_needs_update":
+          case "use_client_key":
+            // Client có key mới hơn hoặc server không có key
+            if (clientKeyData.publicKey) {
+              console.log(`🔄 [${username}] Uploading client key to server...`);
+
+              const syncResult = await new Promise((resolve) => {
+                const syncCallback = (response) => resolve(response);
+
+                const syncData = {
+                  publicKey: clientKeyData.publicKey,
+                  fingerprint: clientKeyData.fingerprint,
+                  keyType: clientKeyData.keyType || "ecdh",
+                  forceUpdate: true,
+                };
+
+                socket.emit("sync_key_from_client", syncData, syncCallback);
+              });
+
+              if (syncResult.success) {
+                console.log(`✅ [${username}] Client key synced to server`);
+                callback({
+                  success: true,
+                  message: "Client key synced to server",
+                  data: {
+                    action: "client_to_server",
+                    fingerprint: syncResult.data?.fingerprint,
+                    syncStatus: syncResult.data?.syncStatus,
+                  },
+                });
+              } else {
+                callback({
+                  success: false,
+                  error: "Failed to sync client key to server",
+                  details: syncResult.error,
+                });
+              }
+            }
+            break;
+
+          case "client_needs_update":
+          case "use_server_key":
+            // Server có key mới hơn, client cần lấy từ server
+            console.log(`🔄 [${username}] Getting current key from server...`);
+
+            const serverKey = await new Promise((resolve) => {
+              const keyCallback = (response) => resolve(response);
+              socket.emit("get_my_current_key", keyCallback);
+            });
+
+            if (serverKey.success && serverKey.data?.hasKey) {
+              console.log(`✅ [${username}] Server key retrieved`);
+              callback({
+                success: true,
+                message: "Server key retrieved",
+                data: {
+                  action: "server_to_client",
+                  key: serverKey.data.key,
+                  syncAction: syncAction,
+                },
+              });
+            } else {
+              callback({
+                success: false,
+                error: "Failed to get server key",
+                details: serverKey.error,
+              });
+            }
+            break;
+
+          case "create_new":
+            // Cả server và client đều không có key
+            console.log(`🆕 [${username}] No keys found, need to create new`);
+            callback({
+              success: true,
+              message: "No keys found on both server and client",
+              data: {
+                action: "create_new",
+                syncAction: syncAction,
+              },
+            });
+            break;
+
+          default:
+            callback({
+              success: true,
+              message: "No sync action needed",
+              data: {
+                action: "no_action",
+                syncAction: syncAction,
+              },
+            });
+        }
+      } else if (syncCheck.success && !syncCheck.data?.syncRequired) {
+        // Keys đã đồng bộ
+        console.log(`✅ [${username}] Keys are already in sync`);
+        callback({
+          success: true,
+          message: "Keys are already in sync",
+          data: {
+            action: "already_synced",
+            match: syncCheck.data?.match,
+          },
+        });
+      } else {
+        callback({
+          success: false,
+          error: "Failed to check sync status",
+          details: syncCheck.error,
+        });
+      }
+    } catch (err) {
+      console.error(
+        `❌ [${username}] Error in auto_sync_on_login:`,
+        err.message
+      );
+      callback({
+        success: false,
+        error: `Auto sync failed: ${err.message}`,
+      });
+    }
+  });
+
   // ==================== VERIFICATION LOG ====================
   console.log(`\n🔍 [${username}] E2EE Handler verification:`);
+  // ==================== VERIFICATION LOG ====================
+
   const registeredEvents = [
     "ping",
     "get_e2ee_info",
@@ -1211,10 +1444,24 @@ function registerE2EEHandlers(socket, io) {
     "update_e2ee_key",
     "request_e2ee_key",
     "get_my_e2ee_keys",
+    "set_active_key",
+    "delete_e2ee_key",
+    "verify_fingerprint",
+    "initiate_key_exchange",
+    "confirm_key_exchange",
     "send_encrypted_message",
     "get_encrypted_messages",
+    "check_e2ee_status",
+    "test_direct_message",
     "debug_room_access",
+    "quick_room_check",
+    "debug_create_room",
     "health_check",
+    // 🆕 THÊM các event mới
+    "get_my_current_key",
+    "check_and_sync_key",
+    "sync_key_from_client",
+    "auto_sync_on_login",
   ];
 
   registeredEvents.forEach((event) => {

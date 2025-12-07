@@ -1698,6 +1698,375 @@ const verifyKeyFingerprint = catchAsync(async (req, res) => {
   }
 });
 
+// Thêm vào controllers/e2eeController.js - sau hàm getE2EEInfo
+
+/**
+ * 15. Lấy public key hiện tại của bản thân user để đồng bộ với frontend
+ * GET /users/e2ee/my-current-key
+ */
+const getMyCurrentKey = catchAsync(async (req, res) => {
+  try {
+    const currentUserId = req.user?.keycloakId;
+
+    console.log("🔑 Getting current E2EE public key for self:", currentUserId);
+
+    const user = await User.findOne({ keycloakId: currentUserId });
+
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    // Nếu user chưa bật E2EE
+    if (!user.e2eeEnabled) {
+      return res.status(200).json({
+        status: "success",
+        data: {
+          e2eeEnabled: false,
+          hasKey: false,
+          message: "E2EE is not enabled for this user",
+        },
+      });
+    }
+
+    // Tìm key active hiện tại
+    const currentKey = user.e2eeKeys?.find(
+      (key) => key.fingerprint === user.currentKeyId && key.isActive
+    );
+
+    if (!currentKey) {
+      return res.status(200).json({
+        status: "success",
+        data: {
+          e2eeEnabled: true,
+          hasKey: false,
+          message: "No active E2EE key found",
+        },
+      });
+    }
+
+    // Trả về thông tin key hiện tại
+    res.status(200).json({
+      status: "success",
+      data: {
+        e2eeEnabled: true,
+        hasKey: true,
+        key: {
+          publicKey: currentKey.publicKey,
+          keyType: currentKey.keyType,
+          fingerprint: currentKey.fingerprint,
+          createdAt: currentKey.createdAt,
+          updatedAt: currentKey.updatedAt,
+          isActive: currentKey.isActive,
+        },
+        syncInfo: {
+          currentKeyId: user.currentKeyId,
+          currentKeyFingerprint: user.currentKeyFingerprint,
+          totalKeys: user.e2eeKeys?.length || 0,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error getting current E2EE key:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to get current E2EE key",
+    });
+  }
+});
+
+/**
+ * 16. Kiểm tra và đồng bộ key với frontend storage
+ * POST /users/e2ee/check-and-sync
+ */
+const checkAndSyncKey = catchAsync(async (req, res) => {
+  try {
+    const { clientPublicKey, clientFingerprint } = req.body;
+    const currentUserId = req.user?.keycloakId;
+
+    console.log("🔄 Checking and syncing E2EE key:", {
+      currentUserId,
+      clientHasKey: !!clientPublicKey,
+      clientFingerprint,
+    });
+
+    const user = await User.findOne({ keycloakId: currentUserId });
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    // Tìm key active hiện tại trên server
+    const serverCurrentKey = user.e2eeKeys?.find(
+      (key) => key.fingerprint === user.currentKeyId && key.isActive
+    );
+
+    const response = {
+      status: "success",
+      data: {
+        syncRequired: false,
+        syncAction: null,
+        message: "",
+        serverKey: null,
+        clientKey: null,
+        match: false,
+      },
+    };
+
+    // Trường hợp 1: Cả server và client đều không có key
+    if (!serverCurrentKey && !clientPublicKey) {
+      response.data.message = "No keys found on both server and client";
+      response.data.syncAction = "create_new";
+      return res.status(200).json(response);
+    }
+
+    // Trường hợp 2: Server có key, client không có
+    if (serverCurrentKey && !clientPublicKey) {
+      response.data.message = "Server has key but client doesn't";
+      response.data.syncRequired = true;
+      response.data.syncAction = "client_needs_update";
+      response.data.serverKey = {
+        fingerprint: serverCurrentKey.fingerprint,
+        keyType: serverCurrentKey.keyType,
+        createdAt: serverCurrentKey.createdAt,
+      };
+      return res.status(200).json(response);
+    }
+
+    // Trường hợp 3: Client có key, server không có
+    if (!serverCurrentKey && clientPublicKey) {
+      response.data.message = "Client has key but server doesn't";
+      response.data.syncRequired = true;
+      response.data.syncAction = "server_needs_update";
+      response.data.clientKey = {
+        fingerprint: clientFingerprint,
+      };
+      return res.status(200).json(response);
+    }
+
+    // Trường hợp 4: Cả hai đều có key -> kiểm tra có match không
+    if (serverCurrentKey && clientPublicKey) {
+      // Tính fingerprint từ client public key
+      const calculatedClientFingerprint =
+        calculateKeyFingerprint(clientPublicKey);
+
+      // So sánh với fingerprint từ server
+      const fingerprintMatch =
+        calculatedClientFingerprint === serverCurrentKey.fingerprint;
+
+      // So sánh public key trực tiếp (nếu fingerprint khớp)
+      let publicKeyMatch = false;
+      if (fingerprintMatch) {
+        publicKeyMatch = clientPublicKey === serverCurrentKey.publicKey;
+      }
+
+      response.data.match = fingerprintMatch && publicKeyMatch;
+      response.data.serverKey = {
+        fingerprint: serverCurrentKey.fingerprint,
+        keyType: serverCurrentKey.keyType,
+      };
+      response.data.clientKey = {
+        fingerprint: clientFingerprint,
+        calculatedFingerprint: calculatedClientFingerprint,
+      };
+
+      if (response.data.match) {
+        response.data.message = "Keys are in sync!";
+        response.data.syncAction = "no_action_needed";
+      } else {
+        response.data.message = "Keys mismatch between server and client";
+        response.data.syncRequired = true;
+
+        // Quyết định sync action dựa trên thời gian
+        const serverKeyTime = new Date(
+          serverCurrentKey.updatedAt || serverCurrentKey.createdAt
+        );
+        const clientKeyTime = req.body.clientCreatedAt
+          ? new Date(req.body.clientCreatedAt)
+          : new Date();
+
+        // Ưu tiên key mới hơn
+        if (serverKeyTime > clientKeyTime) {
+          response.data.syncAction = "use_server_key";
+        } else {
+          response.data.syncAction = "use_client_key";
+        }
+      }
+    }
+
+    res.status(200).json(response);
+  } catch (error) {
+    console.error("❌ Error checking and syncing key:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to check and sync key",
+    });
+  }
+});
+
+/**
+ * 17. Đồng bộ key từ client lên server (client gửi key lên)
+ * POST /users/e2ee/sync-from-client
+ */
+const syncKeyFromClient = catchAsync(async (req, res) => {
+  try {
+    const {
+      publicKey,
+      fingerprint,
+      keyType = "ecdh",
+      forceUpdate = false,
+    } = req.body;
+    const currentUserId = req.user?.keycloakId;
+
+    console.log("🔄 Syncing key from client:", {
+      currentUserId,
+      hasPublicKey: !!publicKey,
+      fingerprint,
+      forceUpdate,
+    });
+
+    // VALIDATION
+    if (!publicKey) {
+      return res.status(400).json({
+        status: "error",
+        message: "publicKey is required",
+      });
+    }
+
+    const user = await User.findOne({ keycloakId: currentUserId });
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+
+    // Tính fingerprint để verify
+    const calculatedFingerprint = calculateKeyFingerprint(publicKey);
+
+    // Nếu client gửi fingerprint, kiểm tra xem có khớp không
+    if (fingerprint && fingerprint !== calculatedFingerprint) {
+      console.warn(
+        `⚠️ Fingerprint mismatch: client=${fingerprint}, calculated=${calculatedFingerprint}`
+      );
+      // Vẫn tiếp tục nhưng dùng calculated fingerprint
+    }
+
+    const finalFingerprint = calculatedFingerprint;
+
+    // Kiểm tra xem key đã tồn tại chưa
+    const existingKey = user.e2eeKeys?.find(
+      (key) => key.fingerprint === finalFingerprint
+    );
+
+    if (existingKey) {
+      console.log("ℹ️ Key already exists on server");
+
+      if (existingKey.isActive && !forceUpdate) {
+        // Key đã active, không cần làm gì
+        return res.status(200).json({
+          status: "success",
+          message: "Key already exists and is active on server",
+          data: {
+            fingerprint: finalFingerprint,
+            alreadyExists: true,
+            isActive: true,
+            syncStatus: "already_synced",
+          },
+        });
+      } else {
+        // Reactivate key hiện tại
+        console.log("🔄 Reactivating existing key...");
+
+        // Đánh dấu tất cả keys là không active
+        user.e2eeKeys.forEach((key) => {
+          key.isActive = false;
+        });
+
+        // Kích hoạt lại key này
+        existingKey.isActive = true;
+        existingKey.keyType = keyType;
+        existingKey.updatedAt = new Date();
+
+        user.currentKeyId = finalFingerprint;
+        user.currentKeyFingerprint = finalFingerprint;
+        user.e2eeEnabled = true;
+
+        await user.save();
+
+        return res.status(200).json({
+          status: "success",
+          message: "Existing key reactivated",
+          data: {
+            fingerprint: finalFingerprint,
+            alreadyExists: true,
+            reactivated: true,
+            syncStatus: "reactivated",
+          },
+        });
+      }
+    }
+
+    // Key mới - thêm vào
+    console.log("🆕 Adding new key from client...");
+
+    // Dọn dẹp keys cũ nếu cần
+    await cleanupOldKeys(user);
+
+    const newKey = {
+      publicKey: publicKey,
+      keyType: keyType,
+      fingerprint: finalFingerprint,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true,
+      isRevoked: false,
+    };
+
+    // Đánh dấu tất cả keys cũ là không active
+    user.e2eeKeys.forEach((key) => {
+      key.isActive = false;
+    });
+
+    // Thêm key mới
+    user.e2eeKeys = user.e2eeKeys || [];
+    user.e2eeKeys.push(newKey);
+
+    // Cập nhật current key
+    user.currentKeyId = finalFingerprint;
+    user.currentKeyFingerprint = finalFingerprint;
+    user.e2eeEnabled = true;
+
+    await user.save();
+
+    console.log("✅ Key synced from client:", {
+      fingerprint: finalFingerprint,
+      totalKeys: user.e2eeKeys.length,
+    });
+
+    res.status(200).json({
+      status: "success",
+      message: "Key synced successfully from client",
+      data: {
+        fingerprint: finalFingerprint,
+        alreadyExists: false,
+        syncStatus: "synced",
+        totalKeys: user.e2eeKeys.length,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error syncing key from client:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Failed to sync key from client",
+    });
+  }
+});
+
 // ==================== EXPORTS ====================
 
 module.exports = {
@@ -1722,4 +2091,7 @@ module.exports = {
   getEncryptedMessages, // Đã sửa với checkRoomAccess
   generateKeyPair,
   verifyKeyFingerprint,
+  getMyCurrentKey,
+  checkAndSyncKey,
+  syncKeyFromClient,
 };

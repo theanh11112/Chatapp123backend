@@ -74,6 +74,29 @@ module.exports = (keycloak) => {
     e2eeController.getAllMyE2EEKeys
   );
 
+  // routes/userRoutes.js - thêm routes mới
+  router.get(
+    "/e2ee/my-current-key",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    e2eeController.getMyCurrentKey
+  );
+  router.post(
+    "/e2ee/check-and-sync",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    e2eeController.checkAndSyncKey
+  );
+  router.post(
+    "/e2ee/sync-from-client",
+    keycloak.protect(),
+    syncUser,
+    allowUsers,
+    e2eeController.syncKeyFromClient
+  );
+
   // 🆕 Enable/disable E2EE
   router.patch(
     "/toggle",

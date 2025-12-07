@@ -1,112 +1,47 @@
-// models/user.js - PHIÊN BẢN ĐƠN GIẢN
+// models/user.js
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 
-// Schema cho E2EE key đơn giản
 const e2eeKeySchema = new mongoose.Schema(
   {
-    publicKey: {
-      type: String, // Public key ở dạng string (base64 hoặc JSON)
-      required: true,
-    },
+    publicKey: { type: String, required: true },
     keyType: {
       type: String,
       enum: ["ecdh", "rsa", "ecdh-p256", "ecdh-p384", "ecdh-p521"],
       default: "ecdh",
     },
-    fingerprint: {
-      type: String, // 8 ký tự đầu của hash
-      required: true,
-    },
-    createdAt: {
-      type: Date,
-      default: Date.now,
-    },
-    isActive: {
-      type: Boolean,
-      default: true,
-    },
+    keyVersion: { type: Number, default: 1 },
+    fingerprint: { type: String, required: true, index: true },
+    createdAt: { type: Date, default: Date.now },
+    isActive: { type: Boolean, default: true },
   },
   { _id: false }
 );
 
 const userSchema = new mongoose.Schema(
   {
-    // Keycloak
-    keycloakId: {
-      type: String,
-      required: true,
-      unique: true,
-      index: true,
-    },
-
-    // Thông tin cơ bản
-    username: {
-      type: String,
-      required: true,
-      index: true,
-    },
-    fullName: {
-      type: String,
-      default: "",
-    },
-    email: {
-      type: String,
-      default: "",
-    },
-    avatar: {
-      type: String,
-      default: null,
-    },
-
-    // Trạng thái
+    keycloakId: { type: String, required: true, unique: true, index: true },
+    username: { type: String, required: true, index: true },
+    fullName: { type: String, default: "" },
+    email: { type: String, default: "" },
+    avatar: { type: String, default: null },
     status: {
       type: String,
       enum: ["Online", "Offline", "Away"],
       default: "Offline",
       index: true,
     },
-    lastSeen: {
-      type: Date,
-      default: Date.now,
-    },
-    socketId: {
-      type: String,
-      index: true,
-      sparse: true,
-    },
+    lastSeen: { type: Date, default: Date.now },
+    socketId: { type: String, index: true, sparse: true },
+    friends: [{ type: String, index: true }],
 
-    // Danh sách bạn bè
-    friends: [
-      {
-        type: String, // keycloakId
-        index: true,
-      },
-    ],
+    // Keep history of public keys
+    e2eeKeys: { type: [e2eeKeySchema], default: [] },
+    e2eeEnabled: { type: Boolean, default: false },
+    currentKeyId: { type: String, default: null },
 
-    // E2EE đơn giản
-    e2eeKeys: {
-      type: [e2eeKeySchema],
-      default: [],
-    },
-    e2eeEnabled: {
-      type: Boolean,
-      default: false,
-    },
-    currentKeyId: {
-      type: String, // ID của key hiện tại đang dùng
-      default: null,
-    },
-
-    // Các trường cơ bản khác
-    isActive: {
-      type: Boolean,
-      default: true,
-    },
-    roles: {
-      type: [String],
-      default: ["user"],
-    },
+    isActive: { type: Boolean, default: true },
+    roles: { type: [String], default: ["user"] },
   },
   {
     timestamps: true,
@@ -114,28 +49,33 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// ==================== INDEXES ====================
-userSchema.index({ username: 1 });
-userSchema.index({ status: 1, lastSeen: -1 });
+// Index on keys fingerprint for fast lookup
 userSchema.index({ "e2eeKeys.fingerprint": 1 });
 
-// ==================== VIRTUALS ====================
+// Virtuals
 userSchema.virtual("isOnline").get(function () {
   return this.status === "Online";
 });
 
 userSchema.virtual("currentE2EEKey").get(function () {
   if (!this.e2eeKeys || this.e2eeKeys.length === 0) return null;
-
-  // Tìm key active
   const activeKey = this.e2eeKeys.find((key) => key.isActive);
-  return activeKey || this.e2eeKeys[0];
+  return activeKey || this.e2eeKeys[this.e2eeKeys.length - 1];
 });
 
-// ==================== METHODS ====================
-// Thêm E2EE key mới
-userSchema.methods.addE2EEKey = function (publicKey, keyType = "ecdh") {
-  // Tính fingerprint
+// Methods
+
+/**
+ * addE2EEKey(publicKey, keyType, options)
+ * - Keep history: push new key into e2eeKeys
+ * - Mark previous keys isActive = false
+ * - Set currentKeyId = new fingerprint
+ */
+userSchema.methods.addE2EEKey = function (
+  publicKey,
+  keyType = "ecdh",
+  options = {}
+) {
   const fingerprint = crypto
     .createHash("sha256")
     .update(publicKey)
@@ -143,17 +83,16 @@ userSchema.methods.addE2EEKey = function (publicKey, keyType = "ecdh") {
     .substring(0, 8)
     .toUpperCase();
 
-  // Đánh dấu key cũ là không active
-  this.e2eeKeys.forEach((key) => {
-    key.isActive = false;
+  // mark previous keys inactive (we still keep them in history)
+  this.e2eeKeys.forEach((k) => {
+    k.isActive = false;
   });
 
-  // Thêm key mới
   const newKey = {
     publicKey,
     keyType,
     fingerprint,
-    createdAt: new Date(),
+    createdAt: options.createdAt || new Date(),
     isActive: true,
   };
 
@@ -164,27 +103,30 @@ userSchema.methods.addE2EEKey = function (publicKey, keyType = "ecdh") {
   return newKey;
 };
 
-// Lấy public key hiện tại
-userSchema.methods.getPublicKey = function () {
-  const currentKey = this.currentE2EEKey;
-  return currentKey ? currentKey.publicKey : null;
+userSchema.methods.getPublicKeyByFingerprint = function (fingerprint) {
+  if (!fingerprint)
+    return this.currentE2EEKey ? this.currentE2EEKey.publicKey : null;
+  const fp = (fingerprint || "").toUpperCase();
+  return (this.e2eeKeys || []).find((k) => k.fingerprint === fp) || null;
 };
 
-// Kiểm tra xem user có hỗ trợ E2EE không
+userSchema.methods.getPublicKeyLatest = function () {
+  const k = this.currentE2EEKey;
+  return k
+    ? { publicKey: k.publicKey, fingerprint: k.fingerprint, keyType: k.keyType }
+    : null;
+};
+
 userSchema.methods.supportsE2EE = function () {
   return this.e2eeEnabled && this.currentE2EEKey;
 };
 
-// ==================== PRE HOOKS ====================
+// Pre-save ensure currentKeyId set
 userSchema.pre("save", function (next) {
-  // Đảm bảo currentKeyId được set
   if (this.e2eeKeys.length > 0 && !this.currentKeyId) {
     const activeKey = this.e2eeKeys.find((key) => key.isActive);
-    if (activeKey) {
-      this.currentKeyId = activeKey.fingerprint;
-    }
+    if (activeKey) this.currentKeyId = activeKey.fingerprint;
   }
-
   next();
 });
 
