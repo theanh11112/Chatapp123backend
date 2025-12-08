@@ -602,6 +602,97 @@ callSchema.methods.missCall = function () {
   return this.save();
 };
 
+// models/call.js - Thêm các methods này nếu chưa có
+
+// Accept call
+callSchema.methods.acceptCall = function (userKeycloakId) {
+  const participant = this.participantDetails.find(
+    (p) => p.userId === userKeycloakId
+  );
+  if (participant) {
+    participant.status = "joined";
+    participant.joinedAt = new Date();
+  }
+
+  this.status = "ongoing";
+  this.answeredAt = new Date();
+
+  if (this.ringingStartedAt) {
+    this.ringingDuration = Math.floor(
+      (new Date() - this.ringingStartedAt) / 1000
+    );
+    this.ringingEndedAt = new Date();
+  }
+
+  return this.save();
+};
+
+// Decline call
+callSchema.methods.declineCall = function (userKeycloakId) {
+  const participant = this.participantDetails.find(
+    (p) => p.userId === userKeycloakId
+  );
+  if (participant) {
+    participant.status = "declined";
+  }
+
+  this.status = "declined";
+  this.endedAt = new Date();
+
+  return this.save();
+};
+
+// End call
+callSchema.methods.endCall = function (endedByKeycloakId, duration = 0) {
+  this.status = "ended";
+  this.endedBy = endedByKeycloakId;
+  this.endedAt = new Date();
+
+  if (duration > 0) {
+    this.duration = duration;
+  } else if (this.answeredAt) {
+    this.duration = Math.floor((new Date() - this.answeredAt) / 1000);
+  }
+
+  return this.save();
+};
+
+// Static method để tạo direct call
+callSchema.statics.createDirectCall = function ({
+  from,
+  to,
+  type,
+  roomID,
+  callMethod = "socketio",
+}) {
+  return this.create({
+    roomID,
+    participants: [from, to],
+    callType: "direct",
+    status: "ringing",
+    startedBy: from,
+    type,
+    ringingStartedAt: new Date(),
+    initiatedTo: to,
+    callMethod,
+  });
+};
+
+// Update participant status
+callSchema.methods.updateParticipantStatus = function (userKeycloakId, status) {
+  const participant = this.participantDetails.find(
+    (p) => p.userId === userKeycloakId
+  );
+  if (participant) {
+    participant.status = status;
+    if (status === "joined") {
+      participant.joinedAt = new Date();
+    }
+    return this.save();
+  }
+  return Promise.reject(new Error("Participant not found"));
+};
+
 // 🆕 THÊM: Helper method để lưu với retry logic
 callSchema.methods.saveWithRetry = async function (maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
